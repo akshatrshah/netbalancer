@@ -1,0 +1,1093 @@
+/*
+ * NetBalancer — Production-Grade L7 Load Balancer
+ *
+ * A real load balancer that accepts HTTP connections and routes
+ * them to a pool of backend servers using pluggable algorithms.
+ *
+ * Threads:
+ *   T1 — Acceptor       : accepts incoming TCP connections
+ *   T2 — Health Checker : probes backends every 2s, marks up/down
+ *   T3 — Metrics Engine : computes p50/p95/p99, req/s, variance
+ *   T4 — Dashboard API  : serves live dashboard + REST API
+ *   T5 — CLI            : interactive control
+ *   T6 — Pipe Reader    : external control via netbalancer.pipe
+ *
+ * Algorithms: round-robin, least-connections, ip-hash
+ */
+
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <map>
+#include <unordered_map>
+#include <queue>
+#include <deque>
+#include <algorithm>
+#include <numeric>
+#include <iomanip>
+#include <fstream>
+#include <chrono>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <cmath>
+#include <csignal>
+#include <climits>
+#include <cstring>
+
+// POSIX networking
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
+
+#include "httplib.h"
+#include "logger.hpp"
+
+// ═══════════════════════════════════════════════════════
+//  Constants
+// ═══════════════════════════════════════════════════════
+
+static constexpr int    LB_PORT             = 8080;
+static constexpr int    DASHBOARD_PORT      = 9090;
+static constexpr int    HEALTH_INTERVAL_MS  = 2000;
+static constexpr int    METRICS_INTERVAL_MS = 1000;
+static constexpr int    HEALTH_TIMEOUT_MS   = 1000;
+static constexpr int    FAIL_THRESHOLD      = 2;     // failures before marking down
+static constexpr int    RECOVER_THRESHOLD   = 2;     // successes before marking up
+static constexpr int    CONNECT_TIMEOUT_MS  = 500;
+static constexpr int    PROXY_TIMEOUT_MS    = 5000;
+static constexpr size_t LATENCY_WINDOW      = 1024;  // lock-free ring buffer size (power of 2)
+static constexpr int    CB_ERROR_THRESHOLD  = 5;     // circuit breaker: errors in window
+static constexpr int    CB_WINDOW_SECS      = 10;    // circuit breaker: sliding window
+static constexpr int    CB_HALF_OPEN_SECS   = 30;    // circuit breaker: retry after this
+static const std::string PIPE_PATH          = "netbalancer.pipe";
+
+// ═══════════════════════════════════════════════════════
+//  Data Structures
+// ═══════════════════════════════════════════════════════
+
+enum class Algorithm { ROUND_ROBIN, LEAST_CONNECTIONS, IP_HASH };
+enum class CBState  { CLOSED, OPEN, HALF_OPEN };  // circuit breaker states
+
+// ── Lock-Free Ring Buffer ────────────────────────────────
+// Single-producer multi-consumer ring buffer for latency samples.
+// Uses power-of-2 size so modulo becomes a bitmask — no division.
+// Avoids mutex on the hot path (every request records latency here).
+template<typename T, size_t N>
+struct LockFreeRing {
+    static_assert((N & (N-1)) == 0, "N must be power of 2");
+    std::array<std::atomic<T>, N> buf;
+    std::atomic<size_t> head{0};  // write cursor
+
+    void push(T val) {
+        size_t slot = head.fetch_add(1, std::memory_order_relaxed) & (N-1);
+        buf[slot].store(val, std::memory_order_relaxed);
+    }
+
+    // Snapshot all valid entries into a vector for percentile calc
+    std::vector<T> snapshot() const {
+        std::vector<T> out;
+        out.reserve(N);
+        size_t cur_head = head.load(std::memory_order_relaxed);
+        size_t count = std::min(cur_head, N);
+        for (size_t i = 0; i < count; i++) {
+            T v = buf[(cur_head - count + i) & (N-1)].load(std::memory_order_relaxed);
+            if (v > 0) out.push_back(v);
+        }
+        return out;
+    }
+};
+
+struct Backend {
+    std::string id;
+    std::string host;
+    int         port;
+    int         weight;
+
+    // Health
+    std::atomic<bool> healthy{true};
+    std::atomic<int>  consecutive_fails{0};
+    std::atomic<int>  consecutive_ok{0};
+
+    // Circuit Breaker
+    std::atomic<CBState> cb_state{CBState::CLOSED};
+    std::atomic<int>     cb_error_count{0};
+    std::atomic<long long> cb_open_time{0};  // epoch seconds when opened
+
+    // Live metrics
+    std::atomic<long long> total_requests{0};
+    std::atomic<long long> total_errors{0};
+    std::atomic<int>       active_connections{0};
+    std::atomic<long long> total_latency_us{0};
+
+    // Per-second metrics (updated by metrics engine)
+    double req_per_sec    = 0.0;
+    double avg_latency_us = 0.0;
+    double error_rate     = 0.0;
+
+    // Lock-free ring buffer for latency — no mutex on hot path
+    LockFreeRing<long long, LATENCY_WINDOW> ring;
+
+    Backend(std::string i, std::string h, int p, int w=1)
+        : id(std::move(i)), host(std::move(h)), port(p), weight(w) {
+        // Zero-init the ring buffer
+        for (auto& a : ring.buf) a.store(0, std::memory_order_relaxed);
+    }
+
+    void record_latency(long long us) {
+        total_latency_us += us;
+        ring.push(us);  // lock-free, no mutex
+    }
+
+    double percentile(double p) const {
+        auto samples = ring.snapshot();
+        if (samples.empty()) return 0.0;
+        std::sort(samples.begin(), samples.end());
+        size_t idx = std::min((size_t)(p * samples.size()), samples.size()-1);
+        return samples[idx] / 1000.0;
+    }
+
+    // Circuit breaker: record an error — may trip the breaker
+    void cb_record_error() {
+        int errs = ++cb_error_count;
+        if (errs >= CB_ERROR_THRESHOLD && cb_state.load() == CBState::CLOSED) {
+            cb_state.store(CBState::OPEN);
+            auto now = std::chrono::system_clock::now().time_since_epoch();
+            cb_open_time.store(std::chrono::duration_cast<std::chrono::seconds>(now).count());
+        }
+    }
+
+    // Circuit breaker: record success — may close the breaker
+    void cb_record_success() {
+        cb_error_count.store(0);
+        if (cb_state.load() == CBState::HALF_OPEN)
+            cb_state.store(CBState::CLOSED);
+    }
+
+    // Circuit breaker: should we allow a request through?
+    bool cb_allow() {
+        CBState s = cb_state.load();
+        if (s == CBState::CLOSED)   return true;
+        if (s == CBState::HALF_OPEN) return true;  // probe request
+        // OPEN: check if retry window has passed
+        auto now = std::chrono::system_clock::now().time_since_epoch();
+        long long now_s = std::chrono::duration_cast<std::chrono::seconds>(now).count();
+        if (now_s - cb_open_time.load() >= CB_HALF_OPEN_SECS) {
+            cb_state.store(CBState::HALF_OPEN);
+            return true;  // allow one probe
+        }
+        return false;  // still open, reject
+    }
+
+    std::string cb_state_str() const {
+        switch (cb_state.load()) {
+            case CBState::CLOSED:    return "CLOSED";
+            case CBState::OPEN:      return "OPEN";
+            case CBState::HALF_OPEN: return "HALF_OPEN";
+        }
+        return "?";
+    }
+};
+
+// Global metrics — lock-free ring buffer for latency, atomics for counters
+struct GlobalMetrics {
+    // 4096-slot lock-free ring for global latency (power of 2)
+    LockFreeRing<long long, 4096> latency_ring;
+
+    std::atomic<long long> total_requests{0};
+    std::atomic<long long> total_errors{0};
+    std::atomic<long long> total_failovers{0};
+
+    // Per-second snapshots (written by metrics engine, read by dashboard)
+    double req_per_sec   = 0.0;
+    double p50_ms        = 0.0;
+    double p95_ms        = 0.0;
+    double p99_ms        = 0.0;
+    double error_rate    = 0.0;
+    double load_variance = 0.0;
+
+    std::chrono::steady_clock::time_point start_time;
+
+    // Called on every successful request — lock-free
+    void record(long long latency_us) {
+        latency_ring.push(latency_us);
+    }
+
+    double percentile(double p) {
+        auto samples = latency_ring.snapshot();
+        if (samples.empty()) return 0.0;
+        std::sort(samples.begin(), samples.end());
+        return samples[std::min((size_t)(p * samples.size()), samples.size()-1)] / 1000.0;
+    }
+} gmetrics;
+
+// ═══════════════════════════════════════════════════════
+//  Backend Pool
+// ═══════════════════════════════════════════════════════
+
+class BackendPool {
+public:
+    std::mutex mtx;
+    std::vector<std::shared_ptr<Backend>> backends;
+    std::atomic<Algorithm> algorithm{Algorithm::ROUND_ROBIN};
+    std::atomic<size_t>    rr_index{0};
+    int backend_counter = 0;
+
+    void add(const std::string& host, int port, int weight = 1) {
+        std::lock_guard<std::mutex> lk(mtx);
+        std::string id = "B" + std::to_string(++backend_counter);
+        backends.push_back(std::make_shared<Backend>(id, host, port, weight));
+        LOG_INFO("Backend added: " + id + " " + host + ":" + std::to_string(port));
+        std::cout << "  Backend " << id << " added (" << host << ":" << port << ")\n";
+    }
+
+    bool remove(const std::string& id) {
+        std::lock_guard<std::mutex> lk(mtx);
+        auto it = std::find_if(backends.begin(), backends.end(),
+            [&](auto& b){ return b->id == id; });
+        if (it == backends.end()) return false;
+        backends.erase(it);
+        return true;
+    }
+
+    // Select backend: respects weight, circuit breaker, and algorithm
+    std::shared_ptr<Backend> select(const std::string& client_ip = "") {
+        std::lock_guard<std::mutex> lk(mtx);
+
+        // Filter: healthy AND circuit breaker allows request
+        std::vector<std::shared_ptr<Backend>> available;
+        for (auto& b : backends)
+            if (b->healthy && b->cb_allow())
+                available.push_back(b);
+        if (available.empty()) return nullptr;
+
+        Algorithm algo = algorithm.load();
+
+        if (algo == Algorithm::ROUND_ROBIN) {
+            // Weighted round-robin: expand each backend by its weight
+            // e.g. weight=2 means it appears twice in the selection pool
+            std::vector<std::shared_ptr<Backend>> weighted_pool;
+            for (auto& b : available)
+                for (int i = 0; i < b->weight; i++)
+                    weighted_pool.push_back(b);
+            size_t idx = rr_index.fetch_add(1) % weighted_pool.size();
+            return weighted_pool[idx];
+        }
+
+        if (algo == Algorithm::LEAST_CONNECTIONS) {
+            // Weight-adjusted: effective_connections = active / weight
+            // Higher weight = can handle more, so divide to normalize
+            return *std::min_element(available.begin(), available.end(),
+                [](auto& a, auto& b){
+                    double ea = (double)a->active_connections.load() / a->weight;
+                    double eb = (double)b->active_connections.load() / b->weight;
+                    return ea < eb;
+                });
+        }
+
+        if (algo == Algorithm::IP_HASH) {
+            size_t h = std::hash<std::string>{}(client_ip);
+            return available[h % available.size()];
+        }
+
+        return available[0];
+    }
+
+    std::string algo_name() const {
+        switch (algorithm.load()) {
+            case Algorithm::ROUND_ROBIN:      return "round-robin";
+            case Algorithm::LEAST_CONNECTIONS:return "least-connections";
+            case Algorithm::IP_HASH:          return "ip-hash";
+        }
+        return "unknown";
+    }
+} pool;
+
+// ═══════════════════════════════════════════════════════
+//  Global flags
+// ═══════════════════════════════════════════════════════
+
+static std::atomic<bool> running{true};
+static std::atomic<int>  lb_socket{-1};
+
+// ═══════════════════════════════════════════════════════
+//  TCP Proxy — forward one connection to a backend
+// ═══════════════════════════════════════════════════════
+
+static bool set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+static int connect_to_backend(const std::string& host, int port) {
+    struct addrinfo hints{}, *res;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0)
+        return -1;
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); return -1; }
+
+    set_nonblocking(fd);
+    connect(fd, res->ai_addr, res->ai_addrlen);  // non-blocking, may return EINPROGRESS
+    freeaddrinfo(res);
+
+    // Wait for connection with timeout
+    struct pollfd pfd { fd, POLLOUT, 0 };
+    if (poll(&pfd, 1, CONNECT_TIMEOUT_MS) <= 0) { close(fd); return -1; }
+    int err = 0; socklen_t len = sizeof(err);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+    if (err != 0) { close(fd); return -1; }
+
+    // Re-enable blocking for proxying
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    return fd;
+}
+
+// Bidirectional proxy between client_fd and backend_fd
+static void proxy(int client_fd, int backend_fd) {
+    char buf[65536];
+    while (running) {
+        struct pollfd pfds[2] = {
+            { client_fd,  POLLIN, 0 },
+            { backend_fd, POLLIN, 0 }
+        };
+        int n = poll(pfds, 2, PROXY_TIMEOUT_MS);
+        if (n <= 0) break;
+
+        for (int i = 0; i < 2; i++) {
+            if (!(pfds[i].revents & POLLIN)) continue;
+            int src = (i == 0) ? client_fd  : backend_fd;
+            int dst = (i == 0) ? backend_fd : client_fd;
+            ssize_t r = read(src, buf, sizeof(buf));
+            if (r <= 0) return;
+            ssize_t written = 0;
+            while (written < r) {
+                ssize_t w = write(dst, buf + written, r - written);
+                if (w <= 0) return;
+                written += w;
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+//  Thread 1 — Acceptor
+// ═══════════════════════════════════════════════════════
+
+void handle_connection(int client_fd, std::string client_ip) {
+    gmetrics.total_requests++;
+
+    auto backend = pool.select(client_ip);
+    if (!backend) {
+        LOG_WARN("503 No healthy backends for client " + client_ip +
+                 " (total_requests=" + std::to_string(gmetrics.total_requests.load()) + ")");
+        const char* resp =
+            "HTTP/1.1 503 Service Unavailable\r\n"
+            "Content-Length: 21\r\n\r\n"
+            "No healthy backends\n";
+        write(client_fd, resp, strlen(resp));
+        close(client_fd);
+        gmetrics.total_errors++;
+        return;
+    }
+
+    backend->active_connections++;
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // Time the backend connect separately for diagnostics
+    auto tc0 = std::chrono::high_resolution_clock::now();
+    int bfd = connect_to_backend(backend->host, backend->port);
+    long long connect_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - tc0).count();
+
+    if (bfd < 0) {
+        backend->active_connections--;
+        backend->total_errors++;
+        backend->total_requests++;
+        gmetrics.total_errors++;
+        backend->cb_record_error();  // error — may trip circuit breaker
+        LOG_WARN("502 Connect failed to " + backend->id + " (" +
+                 backend->host + ":" + std::to_string(backend->port) +
+                 ") connect_time=" + std::to_string(connect_us) + "us" +
+                 " cb=" + backend->cb_state_str());
+        const char* resp =
+            "HTTP/1.1 502 Bad Gateway\r\n"
+            "Content-Length: 15\r\n\r\n"
+            "Backend failed\n";
+        write(client_fd, resp, strlen(resp));
+        close(client_fd);
+        return;
+    }
+
+    proxy(client_fd, bfd);
+
+    long long elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - t0).count();
+
+    backend->active_connections--;
+    backend->total_requests++;
+    backend->record_latency(elapsed);
+    backend->cb_record_success();  // success — may close circuit breaker
+    gmetrics.record(elapsed);
+
+    // Log slow requests (>200ms)
+    if (elapsed > 200000) {
+        LOG_WARN("SLOW_REQ backend=" + backend->id +
+                 " total=" + std::to_string(elapsed/1000) + "ms" +
+                 " connect=" + std::to_string(connect_us/1000) + "ms" +
+                 " active_conn=" + std::to_string(backend->active_connections.load()));
+    }
+
+    close(bfd);
+    close(client_fd);
+}
+
+void acceptor() {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) { std::cerr << "socket() failed\n"; return; }
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port        = htons(LB_PORT);
+
+    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        std::cerr << "  [ERROR] bind() failed on port " << LB_PORT
+                  << " — is something already running there?\n";
+        close(server_fd);
+        return;
+    }
+    listen(server_fd, 1024);
+    lb_socket = server_fd;
+
+    std::cout << "  Accepting connections on :" << LB_PORT << "\n";
+    LOG_INFO("Acceptor listening on port " + std::to_string(LB_PORT));
+
+    while (running) {
+        struct pollfd pfd{ server_fd, POLLIN, 0 };
+        if (poll(&pfd, 1, 500) <= 0) continue;
+
+        struct sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+        if (client_fd < 0) continue;
+
+        char ip_buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, ip_buf, sizeof(ip_buf));
+        std::string client_ip(ip_buf);
+
+        // Each connection gets its own thread
+        std::thread(handle_connection, client_fd, client_ip).detach();
+    }
+
+    close(server_fd);
+    LOG_INFO("Acceptor stopped");
+}
+
+// ═══════════════════════════════════════════════════════
+//  Thread 2 — Health Checker
+// ═══════════════════════════════════════════════════════
+
+static bool probe_backend(Backend& b) {
+    int fd = connect_to_backend(b.host, b.port);
+    if (fd < 0) return false;
+
+    // Send HTTP HEAD request
+    std::string req = "HEAD /health HTTP/1.0\r\nHost: " + b.host + "\r\n\r\n";
+    write(fd, req.c_str(), req.size());
+
+    char buf[256];
+    struct pollfd pfd{ fd, POLLIN, 0 };
+    bool ok = false;
+    if (poll(&pfd, 1, HEALTH_TIMEOUT_MS) > 0) {
+        ssize_t n = read(fd, buf, sizeof(buf)-1);
+        if (n > 0) {
+            buf[n] = '\0';
+            // Any HTTP response (even 404) means backend is alive
+            ok = (strncmp(buf, "HTTP/", 5) == 0);
+        }
+    }
+    close(fd);
+    return ok;
+}
+
+void health_checker() {
+    LOG_INFO("Health checker started (interval=" +
+             std::to_string(HEALTH_INTERVAL_MS) + "ms fail_threshold=" +
+             std::to_string(FAIL_THRESHOLD) + ")");
+    int probe_cycle = 0;
+    while (running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(HEALTH_INTERVAL_MS));
+        probe_cycle++;
+        std::vector<std::shared_ptr<Backend>> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(pool.mtx);
+            snapshot = pool.backends;
+        }
+
+        if (snapshot.empty()) continue;
+
+        // Log health summary every 5 cycles
+        if (probe_cycle % 5 == 0) {
+            std::string summary = "HEALTH_SUMMARY cycle=" + std::to_string(probe_cycle) + " backends=[";
+            for (auto& b : snapshot)
+                summary += b->id + ":" + (b->healthy ? "UP" : "DOWN") +
+                           "(fails=" + std::to_string(b->consecutive_fails.load()) + ") ";
+            summary += "]";
+            LOG_INFO(summary);
+        }
+
+        for (auto& b : snapshot) {
+            auto tp0 = std::chrono::high_resolution_clock::now();
+            bool alive = probe_backend(*b);
+            long long probe_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() - tp0).count();
+
+            if (!alive) {
+                int fails = ++b->consecutive_fails;
+                b->consecutive_ok = 0;
+                LOG_WARN("PROBE_FAIL " + b->id + " (" + b->host + ":" +
+                         std::to_string(b->port) + ") consecutive_fails=" +
+                         std::to_string(fails) + " probe_ms=" + std::to_string(probe_ms));
+                if (fails >= FAIL_THRESHOLD && b->healthy) {
+                    b->healthy = false;
+                    gmetrics.total_failovers++;
+                    std::string msg = "Backend " + b->id + " (" + b->host + ":" +
+                        std::to_string(b->port) + ") marked DOWN after " +
+                        std::to_string(fails) + " failures";
+                    LOG_WARN(msg);
+                    std::cout << "\n  \033[1;31m[DOWN]\033[0m " << msg << "\n";
+                }
+            } else {
+                int oks = ++b->consecutive_ok;
+                b->consecutive_fails = 0;
+                if (oks >= RECOVER_THRESHOLD && !b->healthy) {
+                    b->healthy = true;
+                    std::string msg = "Backend " + b->id + " (" + b->host + ":" +
+                        std::to_string(b->port) + ") recovered — marked UP";
+                    LOG_INFO(msg);
+                    std::cout << "\n  \033[1;32m[UP]\033[0m " << msg << "\n";
+                }
+            }
+        }
+    }
+    LOG_INFO("Health checker stopped");
+}
+
+// ═══════════════════════════════════════════════════════
+//  Thread 3 — Metrics Engine
+// ═══════════════════════════════════════════════════════
+
+void metrics_engine() {
+    LOG_INFO("Metrics engine started");
+    long long last_total = 0;
+    long long last_errors = 0;
+    std::map<std::string, long long> last_backend_reqs;
+
+    while (running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(METRICS_INTERVAL_MS));
+
+        long long cur_total  = gmetrics.total_requests.load();
+        long long cur_errors = gmetrics.total_errors.load();
+
+        // Global req/s and error rate
+        long long delta_total  = cur_total  - last_total;
+        long long delta_errors = cur_errors - last_errors;
+        gmetrics.req_per_sec = (double)delta_total;
+        // Error rate over last second (not all-time, so spikes are visible but old errors fade)
+        gmetrics.error_rate = delta_total > 0 ?
+            (double)delta_errors / delta_total * 100.0 : 0.0;
+
+        // Percentiles from lock-free ring buffer — no mutex needed
+        gmetrics.p50_ms = gmetrics.percentile(0.50);
+        gmetrics.p95_ms = gmetrics.percentile(0.95);
+        gmetrics.p99_ms = gmetrics.percentile(0.99);
+
+        // Per-backend req/s + load variance
+        std::vector<double> req_rates;
+        {
+            std::lock_guard<std::mutex> lk(pool.mtx);
+            for (auto& b : pool.backends) {
+                long long cur = b->total_requests.load();
+                long long prev = last_backend_reqs[b->id];
+                double rps = (double)(cur - prev);
+                b->req_per_sec = rps;
+                b->avg_latency_us = b->total_requests > 0 ?
+                    (double)b->total_latency_us / b->total_requests : 0.0;
+                last_backend_reqs[b->id] = cur;
+                if (b->healthy) req_rates.push_back(rps);
+            }
+        }
+
+        // Compute load variance (std dev of req distribution)
+        if (req_rates.size() > 1) {
+            double mean = std::accumulate(req_rates.begin(), req_rates.end(), 0.0)
+                          / req_rates.size();
+            double sq_sum = 0;
+            for (double r : req_rates) sq_sum += (r - mean) * (r - mean);
+            gmetrics.load_variance = std::sqrt(sq_sum / req_rates.size());
+        }
+
+        last_total  = cur_total;
+        last_errors = cur_errors;
+
+        // Log global metrics every 10s
+        static int tick = 0;
+        if (++tick % 10 == 0) {
+            std::ostringstream bench;
+            bench << std::fixed << std::setprecision(1);
+            bench << "GLOBAL req/s=" << (int)gmetrics.req_per_sec
+                  << " p50=" << gmetrics.p50_ms << "ms"
+                  << " p95=" << gmetrics.p95_ms << "ms"
+                  << " p99=" << gmetrics.p99_ms << "ms"
+                  << " err=" << gmetrics.error_rate << "%"
+                  << " total=" << gmetrics.total_requests.load()
+                  << " errors=" << gmetrics.total_errors.load()
+                  << " failovers=" << gmetrics.total_failovers.load()
+                  << " variance=" << gmetrics.load_variance;
+            LOG_BENCH(bench.str());
+
+            // Per-backend breakdown
+            std::lock_guard<std::mutex> lk(pool.mtx);
+            for (auto& b : pool.backends) {
+                std::ostringstream bs;
+                bs << std::fixed << std::setprecision(1);
+                bs << "BACKEND " << b->id
+                   << " addr=" << b->host << ":" << b->port
+                   << " status=" << (b->healthy ? "UP" : "DOWN")
+                   << " req/s=" << b->req_per_sec
+                   << " active=" << b->active_connections.load()
+                   << " total=" << b->total_requests.load()
+                   << " errors=" << b->total_errors.load()
+                   << " p50=" << b->percentile(0.50) << "ms"
+                   << " p99=" << b->percentile(0.99) << "ms";
+                LOG_BENCH(bs.str());
+            }
+        }
+    }
+    LOG_INFO("Metrics engine stopped");
+}
+
+// ═══════════════════════════════════════════════════════
+//  JSON Serialization
+// ═══════════════════════════════════════════════════════
+
+static std::string esc(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+        if (c == '"')  o += "\\\"";
+        else if (c == '\\') o += "\\\\";
+        else o += c;
+    }
+    return o;
+}
+
+static std::string state_to_json() {
+    std::ostringstream j;
+    auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - gmetrics.start_time).count();
+
+    j << std::fixed << std::setprecision(2);
+    j << "{\"backends\":[";
+
+    std::lock_guard<std::mutex> lk(pool.mtx);
+    bool first = true;
+    for (auto& b : pool.backends) {
+        if (!first) j << ",";
+        j << "{\"id\":\"" << esc(b->id) << "\""
+          << ",\"host\":\"" << esc(b->host) << "\""
+          << ",\"port\":" << b->port
+          << ",\"healthy\":" << (b->healthy ? "true" : "false")
+          << ",\"weight\":" << b->weight
+          << ",\"cb_state\":\"" << esc(b->cb_state_str()) << "\""
+          << ",\"cb_errors\":" << b->cb_error_count.load()
+          << ",\"active_connections\":" << b->active_connections.load()
+          << ",\"total_requests\":" << b->total_requests.load()
+          << ",\"total_errors\":" << b->total_errors.load()
+          << ",\"req_per_sec\":" << b->req_per_sec
+          << ",\"avg_latency_ms\":" << b->avg_latency_us / 1000.0
+          << ",\"p50_ms\":" << b->percentile(0.50)
+          << ",\"p95_ms\":" << b->percentile(0.95)
+          << ",\"p99_ms\":" << b->percentile(0.99)
+          << "}";
+        first = false;
+    }
+
+    j << "],\"global\":{"
+      << "\"total_requests\":" << gmetrics.total_requests.load()
+      << ",\"total_errors\":" << gmetrics.total_errors.load()
+      << ",\"total_failovers\":" << gmetrics.total_failovers.load()
+      << ",\"req_per_sec\":" << gmetrics.req_per_sec
+      << ",\"p50_ms\":" << gmetrics.p50_ms
+      << ",\"p95_ms\":" << gmetrics.p95_ms
+      << ",\"p99_ms\":" << gmetrics.p99_ms
+      << ",\"error_rate\":" << gmetrics.error_rate
+      << ",\"load_variance\":" << gmetrics.load_variance
+      << ",\"algorithm\":\"" << esc(pool.algo_name()) << "\""
+      << ",\"uptime_s\":" << uptime
+      << "}}";
+
+    return j.str();
+}
+
+// ═══════════════════════════════════════════════════════
+//  CLI Dispatcher
+// ═══════════════════════════════════════════════════════
+
+void print_help() {
+    std::cout << R"(
+  ┌──────────────────────────────────────────────────────┐
+  │  NetBalancer Commands                                │
+  ├──────────────────────────────────────────────────────┤
+  │  add <host> <port> [weight]   Add backend server     │
+  │  remove <id>                  Remove backend (e.g B1)│
+  │  algo <rr|lc|hash>            Set algorithm          │
+  │  status                       Live status            │
+  │  bench                        Print metrics summary  │
+  │  help                         Show this help         │
+  │  exit                         Shutdown               │
+  └──────────────────────────────────────────────────────┘
+)";
+}
+
+void show_status() {
+    std::cout << "\n\033[1m╔══════════════════════════════════════════════════════╗\033[0m\n";
+    std::cout << "\033[1m║              LOAD BALANCER STATUS                    ║\033[0m\n";
+    std::cout << "\033[1m╚══════════════════════════════════════════════════════╝\033[0m\n";
+    std::cout << "  Algorithm  : " << pool.algo_name() << "\n";
+    std::cout << "  Req/s      : " << std::fixed << std::setprecision(0) << gmetrics.req_per_sec << "\n";
+    std::cout << "  p50/p95/p99: "
+              << std::setprecision(1) << gmetrics.p50_ms << "ms / "
+              << gmetrics.p95_ms << "ms / "
+              << gmetrics.p99_ms << "ms\n";
+    std::cout << "  Total req  : " << gmetrics.total_requests.load() << "\n";
+    std::cout << "  Errors     : " << gmetrics.total_errors.load()
+              << " (" << std::setprecision(1) << gmetrics.error_rate << "%)\n";
+    std::cout << "  Failovers  : " << gmetrics.total_failovers.load() << "\n\n";
+
+    std::lock_guard<std::mutex> lk(pool.mtx);
+    std::cout << "  " << std::left
+              << std::setw(5)  << "ID"
+              << std::setw(18) << "Backend"
+              << std::setw(7)  << "Status"
+              << std::setw(8)  << "Conn"
+              << std::setw(10) << "Req/s"
+              << std::setw(10) << "p99(ms)"
+              << "Total\n";
+    std::cout << "  " << std::string(62, '-') << "\n";
+
+    for (auto& b : pool.backends) {
+        std::string addr = b->host + ":" + std::to_string(b->port);
+        std::string status = b->healthy ?
+            "\033[32mUP\033[0m  " : "\033[31mDOWN\033[0m";
+        std::cout << "  " << std::left
+                  << std::setw(5)  << b->id
+                  << std::setw(18) << addr
+                  << std::setw(14) << status
+                  << std::setw(8)  << b->active_connections.load()
+                  << std::setw(10) << std::setprecision(0) << b->req_per_sec
+                  << std::setw(10) << std::setprecision(1) << b->percentile(0.99)
+                  << b->total_requests.load() << "\n";
+    }
+    std::cout << "\n";
+}
+
+void show_bench() {
+    long long total = gmetrics.total_requests.load();
+    long long errors = gmetrics.total_errors.load();
+    auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - gmetrics.start_time).count();
+
+    std::cout << "\n\033[1m╔══════════════════════════════════════════════════════╗\033[0m\n";
+    std::cout << "\033[1m║              PERFORMANCE SUMMARY                     ║\033[0m\n";
+    std::cout << "\033[1m╚══════════════════════════════════════════════════════╝\033[0m\n";
+    std::cout << "  Uptime          : " << uptime << "s\n";
+    std::cout << "  Total requests  : " << total << "\n";
+    std::cout << "  Throughput      : " << std::fixed << std::setprecision(0)
+              << (uptime > 0 ? (double)total/uptime : 0) << " req/s (avg)\n";
+    std::cout << "  Live req/s      : " << gmetrics.req_per_sec << "\n";
+    std::cout << "  p50 latency     : " << std::setprecision(2) << gmetrics.p50_ms << " ms\n";
+    std::cout << "  p95 latency     : " << gmetrics.p95_ms << " ms\n";
+    std::cout << "  p99 latency     : " << gmetrics.p99_ms << " ms\n";
+    std::cout << "  Error rate      : " << gmetrics.error_rate << "%\n";
+    std::cout << "  Failovers       : " << gmetrics.total_failovers.load() << "\n";
+    std::cout << "  Load variance   : " << std::setprecision(1)
+              << gmetrics.load_variance << " req/s std dev\n\n";
+
+    // Per-backend breakdown
+    std::lock_guard<std::mutex> lk(pool.mtx);
+    if (!pool.backends.empty()) {
+        std::cout << "  Backend breakdown:\n";
+        double total_served = 0;
+        for (auto& b : pool.backends) total_served += b->total_requests;
+        for (auto& b : pool.backends) {
+            double share = total_served > 0 ? b->total_requests / total_served * 100 : 0;
+            std::cout << "    " << b->id << " (" << b->host << ":" << b->port << ")"
+                      << "  " << b->total_requests.load() << " reqs"
+                      << "  " << std::setprecision(1) << share << "%"
+                      << "  p99=" << b->percentile(0.99) << "ms\n";
+        }
+    }
+    std::cout << "\n";
+}
+
+// Pod process tracking
+static std::mutex pod_mtx;
+static std::map<int, pid_t> pod_pids;  // port -> pid
+
+static int spawn_pod(int port) {
+    // Start a Python backend on the given port
+    std::string cmd =
+        "python3 -c \""
+        "import http.server,time,random,sys\n"
+        "class H(http.server.BaseHTTPRequestHandler):\n"
+        "  def do_GET(self):\n"
+        "    d=random.uniform(0.001,0.008)\n"
+        "    time.sleep(d)\n"
+        "    b=f'pod:" + std::to_string(port) + "\\\\n'\n"
+        "    self.send_response(200)\n"
+        "    self.send_header('Content-Length',len(b))\n"
+        "    self.end_headers()\n"
+        "    self.wfile.write(b.encode())\n"
+        "  def do_HEAD(self):\n"
+        "    self.send_response(200)\n"
+        "    self.end_headers()\n"
+        "  def log_message(self,*a):pass\n"
+        "http.server.HTTPServer(('',"+std::to_string(port)+"),H).serve_forever()\n"
+        "\" &";
+    system(cmd.c_str());
+
+    // Give it a moment to start
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // Get the PID of the process on this port (best effort)
+    std::string pid_cmd = "lsof -ti tcp:" + std::to_string(port) + " 2>/dev/null";
+    FILE* f = popen(pid_cmd.c_str(), "r");
+    pid_t pid = -1;
+    if (f) { fscanf(f, "%d", &pid); pclose(f); }
+
+    {
+        std::lock_guard<std::mutex> lk(pod_mtx);
+        if (pid > 0) pod_pids[port] = pid;
+    }
+    return pid;
+}
+
+static void kill_pod(int port) {
+    std::lock_guard<std::mutex> lk(pod_mtx);
+    auto it = pod_pids.find(port);
+    if (it != pod_pids.end()) {
+        kill(it->second, SIGTERM);
+        pod_pids.erase(it);
+    } else {
+        // Fallback: kill by port
+        std::string cmd = "lsof -ti tcp:" + std::to_string(port) +
+                          " | xargs kill -9 2>/dev/null";
+        system(cmd.c_str());
+    }
+}
+
+void dispatch(const std::string& line) {
+    std::istringstream iss(line);
+    std::string cmd; iss >> cmd;
+    if (cmd.empty() || cmd[0] == '#') return;
+
+    if (cmd == "add") {
+        std::string host; int port; int weight = 1;
+        if (!(iss >> host >> port)) {
+            std::cout << "  Usage: add <host> <port> [weight]\n"; return;
+        }
+        iss >> weight;
+        pool.add(host, port, weight);
+
+    } else if (cmd == "remove") {
+        std::string id; iss >> id;
+        if (pool.remove(id))
+            std::cout << "  Backend " << id << " removed.\n";
+        else
+            std::cout << "  Backend not found.\n";
+
+    } else if (cmd == "spawn") {
+        // spawn <port> [weight] — start a new Python pod and register it
+        int port; int weight = 1;
+        iss >> port;
+        if (port <= 0) { std::cout << "  Usage: spawn <port> [weight]\n"; return; }
+        iss >> weight;
+        if (weight < 1) weight = 1;
+        std::cout << "  Spawning pod on port " << port << " (weight=" << weight << ")...\n";
+        spawn_pod(port);
+        pool.add("localhost", port, weight);
+        std::cout << "  Pod on :" << port << " spawned (weight=" << weight << ").\n";
+
+    } else if (cmd == "killpod") {
+        // killpod <id> — remove from pool and kill the process
+        std::string id; iss >> id;
+        // Find the port for this backend
+        int port = -1;
+        {
+            std::lock_guard<std::mutex> lk(pool.mtx);
+            for (auto& b : pool.backends)
+                if (b->id == id) { port = b->port; break; }
+        }
+        if (port < 0) { std::cout << "  Backend " << id << " not found.\n"; return; }
+        pool.remove(id);
+        kill_pod(port);
+        std::cout << "  Pod " << id << " (:" << port << ") killed.\n";
+
+    } else if (cmd == "algo") {
+        std::string a; iss >> a;
+        if      (a == "rr"   || a == "round-robin")       pool.algorithm = Algorithm::ROUND_ROBIN;
+        else if (a == "lc"   || a == "least-connections")  pool.algorithm = Algorithm::LEAST_CONNECTIONS;
+        else if (a == "hash" || a == "ip-hash")            pool.algorithm = Algorithm::IP_HASH;
+        else { std::cout << "  Unknown algo. Use: rr, lc, hash\n"; return; }
+        std::cout << "  Algorithm set to: " << pool.algo_name() << "\n";
+
+    } else if (cmd == "status") { show_status();
+    } else if (cmd == "bench")  { show_bench();
+    } else if (cmd == "help")   { print_help();
+    } else if (cmd == "exit" || cmd == "quit") {
+        running = false;
+    } else {
+        std::cout << "  Unknown command '" << cmd << "'. Type 'help'.\n";
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+//  Thread 5 — Pipe Reader
+// ═══════════════════════════════════════════════════════
+
+void pipe_reader() {
+    mkfifo(PIPE_PATH.c_str(), 0666);
+    LOG_INFO("Pipe reader started on " + PIPE_PATH);
+    while (running) {
+        int fd = open(PIPE_PATH.c_str(), O_RDONLY | O_NONBLOCK);
+        if (fd < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(200)); continue; }
+        char buf[1024]; std::string leftover;
+        while (running) {
+            ssize_t n = read(fd, buf, sizeof(buf)-1);
+            if (n > 0) {
+                buf[n] = '\0'; leftover += buf;
+                size_t pos;
+                while ((pos = leftover.find('\n')) != std::string::npos) {
+                    std::string cmd = leftover.substr(0, pos);
+                    leftover = leftover.substr(pos+1);
+                    if (!cmd.empty()) {
+                        std::cout << "\n  \033[1;35m[PIPE]\033[0m " << cmd << "\n";
+                        dispatch(cmd);
+                    }
+                }
+            } else { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
+        }
+        close(fd);
+    }
+    unlink(PIPE_PATH.c_str());
+}
+
+// ═══════════════════════════════════════════════════════
+//  Thread 4 — Dashboard HTTP API
+// ═══════════════════════════════════════════════════════
+
+void dashboard_server() {
+    httplib::Server svr;
+    LOG_INFO("Dashboard starting on port " + std::to_string(DASHBOARD_PORT));
+
+    svr.Get("/", [](const httplib::Request&, httplib::Response& res) {
+        std::ifstream f("dashboard.html");
+        if (!f) { res.set_content("dashboard.html not found", "text/plain"); return; }
+        std::string html((std::istreambuf_iterator<char>(f)), {});
+        res.set_content(html, "text/html");
+    });
+
+    svr.Get("/api/state", [](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_content(state_to_json(), "application/json");
+    });
+
+    svr.Post("/api/cmd", [](const httplib::Request& req, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        dispatch(req.body);
+        res.set_content("{\"ok\":true}", "application/json");
+    });
+
+    svr.Get("/api/stream", [](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Cache-Control", "no-cache");
+        res.set_chunked_content_provider("text/event-stream",
+            [](size_t, httplib::DataSink& sink) {
+                std::string payload = "data: " + state_to_json() + "\n\n";
+                if (!sink.write(payload.c_str(), payload.size())) return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                return running.load();
+            });
+    });
+
+    svr.listen("0.0.0.0", DASHBOARD_PORT);
+}
+
+// ═══════════════════════════════════════════════════════
+//  Signal Handler + Main
+// ═══════════════════════════════════════════════════════
+
+void handle_signal(int) {
+    running = false;
+    int s = lb_socket.load();
+    if (s >= 0) close(s);
+}
+
+int main() {
+    signal(SIGINT,  handle_signal);
+    signal(SIGTERM, handle_signal);
+    signal(SIGPIPE, SIG_IGN);  // ignore broken pipe from clients
+
+    Logger::instance().set_console(false);
+    gmetrics.start_time = std::chrono::steady_clock::now();
+    LOG_INFO("NetBalancer starting up");
+
+    std::cout << "\n\033[1m╔══════════════════════════════════════════════════════╗\033[0m\n";
+    std::cout << "\033[1m║      NetBalancer — Production L7 Load Balancer       ║\033[0m\n";
+    std::cout << "\033[1m╚══════════════════════════════════════════════════════╝\033[0m\n";
+    std::cout << "  Listening on     : :" << LB_PORT << "\n";
+    std::cout << "  Dashboard        : http://localhost:" << DASHBOARD_PORT << "\n";
+    std::cout << "  Pipe control     : echo 'add localhost 8001' > " << PIPE_PATH << "\n\n";
+
+    std::thread t1(acceptor);
+    std::thread t2(health_checker);
+    std::thread t3(metrics_engine);
+    std::thread t4(dashboard_server);
+    std::thread t5(pipe_reader);
+
+    print_help();
+
+    std::string line;
+    while (running) {
+        std::cout << "netbalancer> ";
+        if (!std::getline(std::cin, line)) break;
+        dispatch(line);
+    }
+
+    running = false;
+    std::cout << "\n  Shutting down...\n";
+    LOG_INFO("NetBalancer shutting down");
+
+    t1.join(); t2.join(); t3.join();
+    t4.detach(); t5.detach();
+
+    std::cout << "  Bye.\n\n";
+    return 0;
+}
