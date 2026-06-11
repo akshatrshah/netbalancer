@@ -6,101 +6,125 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #07090f; --bg2: #0c1120; --bg3: #101827;
-  --border: #1a2840; --text: #ccd9f0; --muted: #3d5470;
-  --accent: #00d4ff; --green: #00e676; --yellow: #ffb300; --red: #ff3d57;
-  --mono: 'JetBrains Mono', monospace; --ui: 'Space Grotesk', sans-serif;
+  --bg:#07090f;--bg2:#0c1120;--bg3:#101827;--border:#1a2840;
+  --text:#ccd9f0;--muted:#3d5470;--accent:#00d4ff;
+  --green:#00e676;--yellow:#ffb300;--red:#ff3d57;--purple:#a78bfa;
+  --mono:'JetBrains Mono',monospace;--ui:'Space Grotesk',sans-serif;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font-family: var(--ui); min-height: 100vh; display: flex; flex-direction: column; }
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--ui);height:100vh;display:flex;flex-direction:column;overflow:hidden;}
 
-/* Header */
-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 32px; height: 54px; background: var(--bg2);
-  border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
-.logo { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--accent); letter-spacing: 0.1em; }
-.logo span { color: var(--muted); }
-.hdr-stats { display: flex; gap: 28px; }
-.hdr-stat-val { font-family: var(--mono); font-size: 18px; font-weight: 700; text-align: center; }
-.hdr-stat-lbl { font-family: var(--mono); font-size: 9px; color: var(--muted); letter-spacing: 0.1em; text-align: center; margin-top: 2px; }
-.live-pill { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px var(--green); animation: blink 2s infinite; }
-.dot.dead { background: var(--red); box-shadow: 0 0 7px var(--red); animation: none; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+header{display:flex;align-items:center;justify-content:space-between;padding:0 28px;height:52px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;}
+.logo{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--accent);letter-spacing:.1em;}
+.logo span{color:var(--muted);}
+.hdr-stats{display:flex;gap:24px;}
+.hv{font-family:var(--mono);font-size:18px;font-weight:700;text-align:center;}
+.hl{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:.1em;text-align:center;margin-top:2px;}
+.live{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;color:var(--muted);}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 7px var(--green);animation:blink 2s infinite;}
+.dot.dead{background:var(--red);box-shadow:0 0 7px var(--red);animation:none;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
-/* Layout */
-.page { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; }
+.page{display:grid;grid-template-columns:1fr 340px;flex:1;min-height:0;overflow:hidden;}
+.left{display:flex;flex-direction:column;padding:16px 20px;gap:14px;overflow-y:auto;border-right:1px solid var(--border);}
+.right{display:flex;flex-direction:column;overflow:hidden;background:var(--bg2);}
 
-/* Left panel */
-.left { display: flex; flex-direction: column; padding: 20px 24px; gap: 18px; overflow-y: auto; border-right: 1px solid var(--border); }
+.sec{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.14em;margin-bottom:8px;}
 
-/* Right panel */
-.right { display: flex; flex-direction: column; padding: 20px 24px; gap: 18px; overflow-y: auto; }
+/* Algo selector */
+.algo-row{display:flex;gap:8px;}
+.algo-btn{flex:1;padding:9px 6px;text-align:center;border:1px solid var(--border);background:var(--bg3);cursor:pointer;transition:all .15s;font-family:var(--mono);}
+.algo-btn .an{font-size:11px;font-weight:700;color:var(--muted);}
+.algo-btn .ad{font-size:9px;color:var(--muted);margin-top:3px;line-height:1.4;}
+.algo-btn:hover,.algo-btn.active{border-color:var(--accent);background:rgba(0,212,255,.07);}
+.algo-btn.active .an,.algo-btn:hover .an{color:var(--accent);}
+.algo-btn.active .ad{color:var(--text);}
 
-/* Section label */
-.sec-label { font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: 0.14em; margin-bottom: 10px; }
+/* RPS bar */
+.rps-wrap{background:var(--bg2);border:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;gap:14px;}
+.rps-num{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--accent);white-space:nowrap;}
+.rps-num small{font-size:11px;color:var(--muted);}
+.rps-track{flex:1;height:6px;background:var(--border);}
+.rps-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));transition:width .6s;}
+.rps-meta{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;}
 
-/* Algorithm selector */
-.algo-row { display: flex; gap: 8px; }
-.algo-btn {
-  flex: 1; padding: 10px 8px; text-align: center;
-  border: 1px solid var(--border); background: var(--bg3);
-  cursor: pointer; transition: all 0.15s; font-family: var(--mono);
-}
-.algo-btn .a-name { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: 0.05em; }
-.algo-btn .a-desc { font-size: 9px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
-.algo-btn:hover, .algo-btn.active { border-color: var(--accent); background: rgba(0,212,255,0.07); }
-.algo-btn.active .a-name, .algo-btn:hover .a-name { color: var(--accent); }
-.algo-btn.active .a-desc { color: var(--text); }
+/* Visualizer */
+.viz-wrap{background:var(--bg2);border:1px solid var(--border);}
+#viz{width:100%;display:block;}
 
-/* Throughput bar */
-.rps-wrap { background: var(--bg2); border: 1px solid var(--border); padding: 14px 18px; display: flex; align-items: center; gap: 16px; }
-.rps-num { font-family: var(--mono); font-size: 30px; font-weight: 700; color: var(--accent); white-space: nowrap; }
-.rps-num small { font-size: 12px; color: var(--muted); font-weight: 400; }
-.rps-track { flex: 1; height: 7px; background: var(--border); }
-.rps-fill  { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); transition: width 0.6s; }
-.rps-meta  { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
+/* Pods */
+.pods-hdr{display:flex;align-items:center;justify-content:space-between;}
+.spawn-row{display:flex;gap:6px;}
+.port-in{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:6px 10px;outline:none;width:100px;transition:border-color .15s;}
+.port-in:focus{border-color:var(--accent);}
+.spawn-btn{padding:6px 14px;font-family:var(--mono);font-size:11px;font-weight:700;border:1px solid var(--green);color:var(--green);background:rgba(0,230,118,.08);cursor:pointer;transition:all .15s;}
+.spawn-btn:hover{background:rgba(0,230,118,.2);}
 
-/* Infra visualizer */
-.viz-wrap { background: var(--bg2); border: 1px solid var(--border); padding: 0; position: relative; }
-#viz-canvas { width: 100%; display: block; }
+.pods-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:10px;}
+.pod{background:var(--bg2);border:1px solid var(--border);padding:12px;display:flex;flex-direction:column;gap:8px;position:relative;overflow:hidden;transition:border-color .3s;}
+.pod::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+.pod.up::before{background:var(--green);}
+.pod.down::before{background:var(--red);}
+.pod.down{border-color:rgba(255,61,87,.4);background:rgba(255,61,87,.03);}
+.pod-hdr{display:flex;justify-content:space-between;align-items:flex-start;}
+.pod-id{font-family:var(--mono);font-size:13px;font-weight:700;}
+.pod-addr{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:1px;}
+.pod-badge{font-family:var(--mono);font-size:9px;font-weight:700;padding:2px 6px;border:1px solid;}
+.pod-badge.up{color:var(--green);border-color:var(--green);}
+.pod-badge.down{color:var(--red);border-color:var(--red);}
+.pod-g2{display:grid;grid-template-columns:1fr 1fr;gap:4px;}
+.pm-l{font-family:var(--mono);font-size:9px;color:var(--muted);}
+.pm-v{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text);}
+.pod-cb{font-family:var(--mono);font-size:10px;font-weight:700;}
+.share-l{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:3px;}
+.share-t{height:4px;background:var(--border);}
+.share-f{height:100%;transition:width .6s;}
+.kill-btn{padding:5px 0;font-family:var(--mono);font-size:10px;font-weight:700;border:1px solid var(--border);color:var(--muted);background:transparent;cursor:pointer;transition:all .15s;width:100%;}
+.kill-btn:hover{border-color:var(--red);color:var(--red);background:rgba(255,61,87,.08);}
+.empty{grid-column:1/-1;text-align:center;padding:36px;color:var(--muted);font-family:var(--mono);font-size:11px;line-height:2;border:1px dashed var(--border);}
 
-/* Pod cards */
-.pods-header { display: flex; align-items: center; justify-content: space-between; }
-.spawn-row { display: flex; gap: 8px; }
-.port-input { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 6px 10px; outline: none; width: 110px; transition: border-color 0.15s; }
-.port-input:focus { border-color: var(--accent); }
-.spawn-btn { padding: 6px 16px; font-family: var(--mono); font-size: 11px; font-weight: 700; border: 1px solid var(--green); color: var(--green); background: rgba(0,230,118,0.08); cursor: pointer; transition: all 0.15s; }
-.spawn-btn:hover { background: rgba(0,230,118,0.2); }
+/* Right panel tabs */
+.r-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
+.r-tab{flex:1;padding:9px 0;text-align:center;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;font-family:var(--mono);}
+.r-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+.r-tab:hover{color:var(--text);}
+.r-body{flex:1;overflow-y:auto;padding:14px;}
+.r-body::-webkit-scrollbar{width:3px;}
+.r-body::-webkit-scrollbar-thumb{background:var(--border);}
+.tc{display:none;}.tc.active{display:block;}
 
-.pods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
-.pod { background: var(--bg2); border: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 9px; position: relative; overflow: hidden; transition: border-color 0.3s; }
-.pod::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
-.pod.up::before   { background: var(--green); }
-.pod.down::before { background: var(--red); }
-.pod.down { border-color: rgba(255,61,87,0.4); background: rgba(255,61,87,0.03); }
+/* Control panel */
+.ctrl-sec{margin-bottom:14px;}
+.ctrl-l{font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.1em;font-family:var(--mono);margin-bottom:6px;}
+.ctrl-row{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;}
+.ci{flex:1;min-width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:6px 8px;outline:none;transition:border-color .15s;}
+.ci:focus{border-color:var(--accent);}
+.cb{padding:6px 12px;font-family:var(--mono);font-size:11px;font-weight:700;border:1px solid;cursor:pointer;transition:all .15s;white-space:nowrap;}
+.cb.b{color:var(--accent);border-color:var(--accent);background:rgba(0,212,255,.08);}
+.cb.b:hover{background:rgba(0,212,255,.18);}
+.cb.r{color:var(--red);border-color:var(--red);background:rgba(255,61,87,.08);}
+.cb.r:hover{background:rgba(255,61,87,.18);}
+.cb.g{color:var(--green);border-color:var(--green);background:rgba(0,230,118,.08);}
+.cb.g:hover{background:rgba(0,230,118,.18);}
 
-.pod-hdr { display: flex; justify-content: space-between; align-items: flex-start; }
-.pod-id   { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--accent); }
-.pod-port { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 1px; }
-.pod-badge { font-family: var(--mono); font-size: 9px; font-weight: 700; padding: 2px 7px; border: 1px solid; }
-.pod-badge.up   { color: var(--green); border-color: var(--green); }
-.pod-badge.down { color: var(--red);   border-color: var(--red); }
+/* Dist bars */
+.dist-item{margin-bottom:10px;}
+.dist-hdr{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;margin-bottom:4px;}
+.dist-t{height:6px;background:var(--border);}
+.dist-f{height:100%;transition:width .5s;}
 
-.pod-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-.pm-label { font-family: var(--mono); font-size: 9px; color: var(--muted); }
-.pm-val   { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.2; }
+/* Request log */
+.log-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10px;}
+.log-ts{color:var(--muted);width:54px;flex-shrink:0;}
+.log-be{font-weight:700;width:28px;flex-shrink:0;}
+.log-path{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.log-lat{width:45px;text-align:right;flex-shrink:0;}
+.log-ok{color:var(--green);}
+.log-slow{color:var(--yellow);}
+.log-err{color:var(--red);}
+.no-logs{text-align:center;padding:30px;color:var(--muted);font-family:var(--mono);font-size:11px;}
 
-.share-label { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 9px; color: var(--muted); margin-bottom: 3px; }
-.share-track { height: 4px; background: var(--border); }
-.share-fill  { height: 100%; transition: width 0.6s; }
-
-.kill-btn { padding: 5px 0; font-family: var(--mono); font-size: 10px; font-weight: 700; border: 1px solid var(--border); color: var(--muted); background: transparent; cursor: pointer; transition: all 0.15s; text-align: center; width: 100%; }
-.kill-btn:hover { border-color: var(--red); color: var(--red); background: rgba(255,61,87,0.08); }
-
-.empty-pods { grid-column: 1/-1; text-align: center; padding: 40px; color: var(--muted); font-family: var(--mono); font-size: 11px; line-height: 2; border: 1px dashed var(--border); }
+*{scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
 </style>
 </head>
 <body>
@@ -108,421 +132,395 @@ header {
 <header>
   <div class="logo">NET<span>/</span>BALANCER</div>
   <div class="hdr-stats">
-    <div>
-      <div class="hdr-stat-val" id="h-rps" style="color:var(--accent)">0</div>
-      <div class="hdr-stat-lbl">REQ/S</div>
-    </div>
-    <div>
-      <div class="hdr-stat-val" id="h-total">0</div>
-      <div class="hdr-stat-lbl">TOTAL</div>
-    </div>
-    <div>
-      <div class="hdr-stat-val" id="h-pods" style="color:var(--green)">0</div>
-      <div class="hdr-stat-lbl">PODS UP</div>
-    </div>
-    <div>
-      <div class="hdr-stat-val" id="h-err" style="color:var(--muted)">0%</div>
-      <div class="hdr-stat-lbl">ERR RATE</div>
-    </div>
+    <div><div class="hv" id="h-rps" style="color:var(--accent)">0</div><div class="hl">REQ/S</div></div>
+    <div><div class="hv" id="h-total">0</div><div class="hl">TOTAL</div></div>
+    <div><div class="hv" id="h-pods" style="color:var(--green)">0</div><div class="hl">PODS UP</div></div>
+    <div><div class="hv" id="h-err" style="color:var(--muted)">0%</div><div class="hl">ERRORS</div></div>
   </div>
-  <div class="live-pill"><div class="dot" id="dot"></div>LIVE</div>
+  <div class="live"><div class="dot" id="dot"></div>LIVE</div>
 </header>
 
 <div class="page">
+<div class="left">
 
-  <!-- LEFT: viz + pods -->
-  <div class="left">
-
-    <!-- Infra visualizer -->
-    <div>
-      <div class="sec-label">INFRASTRUCTURE VIEW</div>
-      <div class="viz-wrap">
-        <canvas id="viz-canvas"></canvas>
+  <!-- Algo -->
+  <div>
+    <div class="sec">ROUTING ALGORITHM</div>
+    <div class="algo-row">
+      <div class="algo-btn active" id="algo-rr" onclick="setAlgo('rr')">
+        <div class="an">ROUND ROBIN</div><div class="ad">Even rotation across all pods</div>
+      </div>
+      <div class="algo-btn" id="algo-lc" onclick="setAlgo('lc')">
+        <div class="an">LEAST CONN</div><div class="ad">Route to least busy pod</div>
+      </div>
+      <div class="algo-btn" id="algo-hash" onclick="setAlgo('hash')">
+        <div class="an">IP HASH</div><div class="ad">Same client → same pod</div>
       </div>
     </div>
-
-    <!-- Pod cards -->
-    <div>
-      <div class="pods-header">
-        <div class="sec-label" style="margin-bottom:0">BACKEND PODS</div>
-        <div class="spawn-row">
-          <input class="port-input" id="port-input" placeholder="port e.g. 8001" type="number">
-          <button class="spawn-btn" onclick="spawnPod()">+ SPAWN POD</button>
-        </div>
-      </div>
-      <div style="height:10px"></div>
-      <div class="pods-grid" id="pods-grid">
-        <div class="empty-pods">No pods running.<br>Enter a port above and click SPAWN POD.</div>
-      </div>
-    </div>
-
   </div>
 
-  <!-- RIGHT: algo + throughput -->
-  <div class="right">
-
-    <div>
-      <div class="sec-label">ROUTING ALGORITHM</div>
-      <div class="algo-row">
-        <div class="algo-btn active" id="algo-rr" onclick="setAlgo('rr')">
-          <div class="a-name">ROUND ROBIN</div>
-          <div class="a-desc">Each request cycles to next pod evenly.</div>
-        </div>
-      </div>
-      <div style="height:8px"></div>
-      <div class="algo-row">
-        <div class="algo-btn" id="algo-lc" onclick="setAlgo('lc')">
-          <div class="a-name">LEAST CONNECTIONS</div>
-          <div class="a-desc">Route to pod with fewest active connections.</div>
-        </div>
-      </div>
-      <div style="height:8px"></div>
-      <div class="algo-row">
-        <div class="algo-btn" id="algo-hash" onclick="setAlgo('hash')">
-          <div class="a-name">IP HASH</div>
-          <div class="a-desc">Same client IP always hits the same pod.</div>
-        </div>
-      </div>
-    </div>
-
-    <div>
-      <div class="sec-label">LIVE THROUGHPUT</div>
-      <div class="rps-wrap">
-        <div class="rps-num" id="rps-num">0 <small>req/s</small></div>
-        <div class="rps-track"><div class="rps-fill" id="rps-fill" style="width:0%"></div></div>
-        <div class="rps-meta" id="rps-meta">—</div>
-      </div>
-    </div>
-
-    <!-- Per-pod req/s breakdown -->
-    <div>
-      <div class="sec-label">TRAFFIC DISTRIBUTION</div>
-      <div id="dist-list" style="display:flex;flex-direction:column;gap:8px">
-        <div style="font-family:var(--mono);font-size:11px;color:var(--muted)">Waiting for traffic...</div>
-      </div>
-    </div>
-
+  <!-- RPS -->
+  <div class="rps-wrap">
+    <div class="rps-num" id="rps-num">0 <small>req/s</small></div>
+    <div class="rps-track"><div class="rps-fill" id="rps-fill" style="width:0%"></div></div>
+    <div class="rps-meta" id="rps-meta">—</div>
   </div>
+
+  <!-- Visualizer -->
+  <div>
+    <div class="sec">LIVE TRAFFIC FLOW</div>
+    <div class="viz-wrap"><canvas id="viz"></canvas></div>
+  </div>
+
+  <!-- Pods -->
+  <div>
+    <div class="pods-hdr">
+      <div class="sec" style="margin-bottom:0">BACKEND PODS</div>
+      <div class="spawn-row">
+        <input class="port-in" id="port-in" placeholder="port e.g. 8001" type="number">
+        <button class="spawn-btn" onclick="spawnPod()">+ SPAWN</button>
+      </div>
+    </div>
+    <div style="height:8px"></div>
+    <div class="pods-grid" id="pods-grid">
+      <div class="empty">No pods running.<br>Enter a port above and click SPAWN.</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Right panel -->
+<div class="right">
+  <div class="r-tabs">
+    <div class="r-tab active" onclick="rtab('dist')">TRAFFIC</div>
+    <div class="r-tab" onclick="rtab('log')">REQUEST LOG</div>
+    <div class="r-tab" onclick="rtab('ctrl')">CONTROL</div>
+  </div>
+  <div class="r-body">
+
+    <!-- TRAFFIC dist -->
+    <div class="tc active" id="tc-dist">
+      <div class="sec">LIVE REQ/S PER POD</div>
+      <div id="dist-list"><div style="color:var(--muted);font-family:var(--mono);font-size:11px">No pods yet.</div></div>
+      <div style="height:16px"></div>
+      <div class="sec">RATE LIMITER</div>
+      <div id="rl-info" style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.8">
+        Token bucket: 100 tokens/IP<br>Refill: 50 tokens/sec<br>Tracked IPs: <span id="rl-ips">0</span>
+      </div>
+    </div>
+
+    <!-- REQUEST LOG -->
+    <div class="tc" id="tc-log">
+      <div class="sec">LAST 30 REQUESTS</div>
+      <div style="display:flex;gap:8px;font-family:var(--mono);font-size:9px;color:var(--muted);padding-bottom:6px;border-bottom:1px solid var(--border);margin-bottom:4px;">
+        <span style="width:54px">TIME</span>
+        <span style="width:28px">POD</span>
+        <span style="flex:1">PATH</span>
+        <span style="width:45px;text-align:right">LATENCY</span>
+      </div>
+      <div id="log-list"><div class="no-logs">Waiting for requests...</div></div>
+    </div>
+
+    <!-- CONTROL -->
+    <div class="tc" id="tc-ctrl">
+      <div class="ctrl-sec">
+        <div class="ctrl-l">ADD BACKEND</div>
+        <div class="ctrl-row">
+          <input class="ci" id="in-host" placeholder="host" value="localhost">
+          <input class="ci" id="in-port" placeholder="port" style="width:65px;flex:none">
+          <input class="ci" id="in-w" placeholder="w" value="1" style="width:36px;flex:none">
+          <button class="cb b" onclick="addBackend()">ADD</button>
+        </div>
+      </div>
+      <div class="ctrl-sec">
+        <div class="ctrl-l">REMOVE BACKEND</div>
+        <div class="ctrl-row">
+          <input class="ci" id="in-rm" placeholder="e.g. B1">
+          <button class="cb r" onclick="removeBackend()">REMOVE</button>
+        </div>
+      </div>
+      <div class="ctrl-sec">
+        <div class="ctrl-l">RAW COMMAND</div>
+        <div class="ctrl-row">
+          <input class="ci" id="in-raw" placeholder="e.g. algo lc" onkeydown="if(event.key==='Enter')sendRaw()">
+          <button class="cb b" onclick="sendRaw()">SEND</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 </div>
 
 <script>
-// ── State ──────────────────────────────────────────────
-let state = null;
-let maxRps = 1;
-const COLORS = ['#00d4ff','#00e676','#ffb300','#a78bfa','#ff6b6b','#26c6da'];
+const COLORS = ['#00d4ff','#00e676','#ffb300','#a78bfa','#ff6b6b','#26c6da','#f06292'];
+let state = null, maxRps = 1;
 
 // ── API ────────────────────────────────────────────────
 async function cmd(c) {
-  try { await fetch('/api/cmd', { method: 'POST', body: c }); }
-  catch(e) { console.error(e); }
+  try { await fetch('/api/cmd',{method:'POST',body:c}); } catch(e){}
 }
-function setAlgo(a) {
-  cmd('algo ' + a);
-  ['rr','lc','hash'].forEach(id =>
-    document.getElementById('algo-'+id).classList.toggle('active', id === a));
-}
+function setAlgo(a) { cmd('algo '+a); }
 function spawnPod() {
-  const p = document.getElementById('port-input').value.trim();
-  if (p) { cmd('spawn ' + p); document.getElementById('port-input').value = ''; }
+  const p = document.getElementById('port-in').value.trim();
+  if (p) { cmd('spawn '+p); document.getElementById('port-in').value=''; }
 }
-function killPod(id) { cmd('killpod ' + id); }
+function killPod(id) { cmd('killpod '+id); }
+function addBackend() { cmd('add '+val('in-host')+' '+val('in-port')+' '+(val('in-w')||'1')); }
+function removeBackend() { cmd('remove '+val('in-rm')); }
+function sendRaw() { cmd(val('in-raw')); }
+function val(id) { return document.getElementById(id).value.trim(); }
 
-// ── Helpers ────────────────────────────────────────────
-function fmt(n) {
-  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
-  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
-  return String(n);
-}
-
-// ── Infra Canvas Visualizer ────────────────────────────
-// Draws: [CLIENT] ---> [LOAD BALANCER] ---> [POD] [POD] [POD]
-// Lines animated with moving dots to show live traffic flow
-const canvas = document.getElementById('viz-canvas');
-const ctx = canvas.getContext('2d');
-let particles = [];  // {x, y, targetX, targetY, progress, color, podIdx}
-let vizState = { backends: [], rps: 0, algo: 'round-robin' };
-let animFrame = null;
-let lastParticleTime = 0;
-
-function resizeCanvas() {
-  const wrap = canvas.parentElement;
-  canvas.width  = wrap.clientWidth;
-  canvas.height = 200;
-}
-
-function getLBPos() {
-  return { x: canvas.width / 2, y: canvas.height / 2 };
-}
-
-function getClientPos() {
-  return { x: 60, y: canvas.height / 2 };
-}
-
-function getPodPositions(backends) {
-  const n = backends.length;
-  if (n === 0) return [];
-  const startX = canvas.width - 70;
-  const spacing = Math.min(40, (canvas.height - 40) / Math.max(n, 1));
-  const totalH = (n - 1) * spacing;
-  const startY = canvas.height / 2 - totalH / 2;
-  return backends.map((b, i) => ({
-    x: startX,
-    y: startY + i * spacing,
-    color: COLORS[i % COLORS.length],
-    healthy: b.healthy,
-    id: b.id,
-    rps: b.req_per_sec
-  }));
-}
-
-function spawnParticle(podPositions) {
-  if (podPositions.length === 0) return;
-  const healthy = podPositions.filter(p => p.healthy);
-  if (healthy.length === 0) return;
-  const pod = healthy[Math.floor(Math.random() * healthy.length)];
-  const lb  = getLBPos();
-  const cli = getClientPos();
-
-  // Two-segment: client→LB then LB→pod
-  particles.push({
-    phase: 0,  // 0 = client->LB, 1 = LB->pod
-    x: cli.x, y: cli.y,
-    lbX: lb.x, lbY: lb.y,
-    podX: pod.x, podY: pod.y,
-    progress: 0,
-    color: pod.color,
-    speed: 0.025 + Math.random() * 0.02
+// ── Tabs ───────────────────────────────────────────────
+function rtab(name) {
+  ['dist','log','ctrl'].forEach((n,i) => {
+    document.querySelectorAll('.r-tab')[i].classList.toggle('active', n===name);
+    document.getElementById('tc-'+n).classList.toggle('active', n===name);
   });
-}
-
-function drawViz(timestamp) {
-  resizeCanvas();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const bs = vizState.backends;
-  const lb = getLBPos();
-  const cli = getClientPos();
-  const pods = getPodPositions(bs);
-
-  // ── Background ──
-  ctx.fillStyle = '#0c1120';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // ── Draw lines: client -> LB ──
-  ctx.beginPath();
-  ctx.moveTo(cli.x + 22, cli.y);
-  ctx.lineTo(lb.x - 28, lb.y);
-  ctx.strokeStyle = '#1a2840';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  // ── Draw lines: LB -> each pod ──
-  pods.forEach(pod => {
-    ctx.beginPath();
-    ctx.moveTo(lb.x + 28, lb.y);
-    ctx.lineTo(pod.x - 22, pod.y);
-    ctx.strokeStyle = pod.healthy ? '#1a2840' : 'rgba(255,61,87,0.2)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash(pod.healthy ? [] : [4, 4]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  });
-
-  // ── CLIENT box ──
-  const cw = 44, ch = 28;
-  ctx.fillStyle = '#0d1a2e';
-  ctx.strokeStyle = '#1e3a5f';
-  ctx.lineWidth = 1;
-  ctx.fillRect(cli.x - cw/2, cli.y - ch/2, cw, ch);
-  ctx.strokeRect(cli.x - cw/2, cli.y - ch/2, cw, ch);
-  ctx.fillStyle = '#4a6080';
-  ctx.font = '700 9px JetBrains Mono';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('CLIENT', cli.x, cli.y);
-
-  // ── LB box ──
-  const lbw = 56, lbh = 36;
-  const rps = vizState.rps;
-  const lbGlow = Math.min(rps / 50, 1);
-  ctx.shadowColor = `rgba(0,212,255,${lbGlow * 0.6})`;
-  ctx.shadowBlur  = lbGlow * 20;
-  ctx.fillStyle   = '#0d1a2e';
-  ctx.strokeStyle = rps > 0 ? '#00d4ff' : '#1e3a5f';
-  ctx.lineWidth   = rps > 0 ? 1.5 : 1;
-  ctx.fillRect(lb.x - lbw/2, lb.y - lbh/2, lbw, lbh);
-  ctx.strokeRect(lb.x - lbw/2, lb.y - lbh/2, lbw, lbh);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = '#00d4ff';
-  ctx.font = '700 9px JetBrains Mono';
-  ctx.fillText('LOAD', lb.x, lb.y - 6);
-  ctx.fillText('BALANCER', lb.x, lb.y + 6);
-
-  // algo label below LB
-  ctx.fillStyle = '#3d5470';
-  ctx.font = '9px JetBrains Mono';
-  ctx.fillText(vizState.algo.toUpperCase().replace('ROUND-ROBIN','RR').replace('LEAST-CONNECTIONS','LC').replace('IP-HASH','HASH'), lb.x, lb.y + lbh/2 + 12);
-
-  // ── POD boxes ──
-  pods.forEach(pod => {
-    const pw = 44, ph = 28;
-    const isActive = pod.rps > 0;
-    ctx.shadowColor = pod.healthy ? `rgba(0,230,118,${isActive ? 0.4 : 0.1})` : 'rgba(255,61,87,0.3)';
-    ctx.shadowBlur  = pod.healthy && isActive ? 12 : 4;
-    ctx.fillStyle   = pod.healthy ? '#0d1a2e' : 'rgba(255,61,87,0.08)';
-    ctx.strokeStyle = pod.healthy ? pod.color : '#ff3d57';
-    ctx.lineWidth   = 1.5;
-    ctx.fillRect(pod.x - pw/2, pod.y - ph/2, pw, ph);
-    ctx.strokeRect(pod.x - pw/2, pod.y - ph/2, pw, ph);
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = pod.healthy ? pod.color : '#ff3d57';
-    ctx.font = '700 9px JetBrains Mono';
-    ctx.fillText(pod.id, pod.x, pod.y - 4);
-    ctx.fillStyle = '#3d5470';
-    ctx.font = '9px JetBrains Mono';
-    ctx.fillText(pod.healthy ? pod.rps.toFixed(0)+'/s' : 'DOWN', pod.x, pod.y + 7);
-  });
-
-  // ── Spawn particles based on rps ──
-  const spawnRate = Math.max(50, 400 - rps * 3);  // faster spawn at higher rps
-  if (timestamp - lastParticleTime > spawnRate && pods.length > 0) {
-    spawnParticle(pods);
-    lastParticleTime = timestamp;
-  }
-
-  // ── Draw + update particles ──
-  particles = particles.filter(p => {
-    p.progress += p.speed;
-
-    let x, y;
-    if (p.phase === 0) {
-      // client → LB
-      const t = Math.min(p.progress, 1);
-      x = p.x + (p.lbX - p.x) * t;
-      y = p.y + (p.lbY - p.y) * t;
-      if (p.progress >= 1) { p.phase = 1; p.progress = 0; }
-    } else {
-      // LB → pod
-      const t = Math.min(p.progress, 1);
-      x = p.lbX + (p.podX - p.lbX) * t;
-      y = p.lbY + (p.podY - p.lbY) * t;
-      if (p.progress >= 1) return false;  // remove
-    }
-
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = p.color;
-    ctx.shadowColor = p.color;
-    ctx.shadowBlur = 6;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    return true;
-  });
-
-  animFrame = requestAnimationFrame(drawViz);
 }
 
 // ── Render ─────────────────────────────────────────────
 function render(s) {
   state = s;
   const g = s.global, bs = s.backends;
-  const healthy = bs.filter(b => b.healthy).length;
-
-  // Update viz state with REAL data
-  vizState.backends = bs;  // includes weight, cb_state, all real metrics
-  vizState.rps      = g.req_per_sec;
-  vizState.algo     = g.algorithm;
+  const healthy = bs.filter(b=>b.healthy).length;
 
   // Header
   document.getElementById('h-rps').textContent   = Math.round(g.req_per_sec);
   document.getElementById('h-total').textContent = fmt(g.total_requests);
   document.getElementById('h-pods').textContent  = healthy;
-  document.getElementById('h-pods').style.color  = healthy === 0 ? 'var(--red)' : 'var(--green)';
-  const errEl = document.getElementById('h-err');
-  errEl.textContent  = g.error_rate.toFixed(1) + '%';
-  errEl.style.color  = g.error_rate > 5 ? 'var(--red)' : g.error_rate > 1 ? 'var(--yellow)' : 'var(--muted)';
+  document.getElementById('h-pods').style.color  = healthy===0?'var(--red)':'var(--green)';
+  const eEl = document.getElementById('h-err');
+  eEl.textContent = g.error_rate.toFixed(1)+'%';
+  eEl.style.color = g.error_rate>5?'var(--red)':g.error_rate>1?'var(--yellow)':'var(--muted)';
 
   // Algo buttons
-  const algoMap = { 'round-robin':'rr', 'least-connections':'lc', 'ip-hash':'hash' };
+  const am = {'round-robin':'rr','least-connections':'lc','ip-hash':'hash'};
   ['rr','lc','hash'].forEach(a =>
-    document.getElementById('algo-'+a).classList.toggle('active', algoMap[g.algorithm] === a));
+    document.getElementById('algo-'+a).classList.toggle('active', am[g.algorithm]===a));
 
   // RPS bar
   maxRps = Math.max(maxRps, g.req_per_sec, 1);
-  document.getElementById('rps-num').innerHTML  = Math.round(g.req_per_sec) + ' <small>req/s</small>';
-  document.getElementById('rps-fill').style.width = Math.min(g.req_per_sec / maxRps * 100, 100) + '%';
-  document.getElementById('rps-meta').textContent = fmt(g.total_requests) + ' total · ' + g.total_failovers + ' failovers';
+  document.getElementById('rps-num').innerHTML = Math.round(g.req_per_sec)+' <small>req/s</small>';
+  document.getElementById('rps-fill').style.width = Math.min(g.req_per_sec/maxRps*100,100)+'%';
+  document.getElementById('rps-meta').textContent =
+    fmt(g.total_requests)+' total · '+g.total_failovers+' failovers · '+g.error_rate.toFixed(1)+'% err';
 
-  // Traffic distribution — real req/s per pod
-  if (bs.length === 0) {
+  // Rate limiter
+  document.getElementById('rl-ips').textContent = g.rate_limited_ips || 0;
+
+  // Traffic distribution — uses LIVE req/s not all-time totals
+  const totalRps = bs.reduce((s,b)=>s+b.req_per_sec,0)||1;
+  if (!bs.length) {
     document.getElementById('dist-list').innerHTML =
-      '<div style="font-family:var(--mono);font-size:11px;color:var(--muted)">No pods yet.</div>';
+      '<div style="color:var(--muted);font-family:var(--mono);font-size:11px">No pods yet.</div>';
   } else {
-    const maxPodRps = Math.max(...bs.map(b => b.req_per_sec), 1);
-    document.getElementById('dist-list').innerHTML = bs.map((b, i) => {
-      const col = COLORS[i % COLORS.length];
-      const pct = (b.req_per_sec / maxPodRps * 100).toFixed(0);
-      return `
-      <div>
-        <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;margin-bottom:4px">
-          <span style="color:${b.healthy ? col : 'var(--red)'}">
-            ${b.id} <span style="color:var(--muted)">:${b.port}</span>
-          </span>
-          <span style="color:var(--text)">${b.req_per_sec.toFixed(0)} req/s</span>
+    document.getElementById('dist-list').innerHTML = bs.map((b,i) => {
+      const col = COLORS[i%COLORS.length];
+      const pct = (b.req_per_sec/totalRps*100).toFixed(1);
+      return `<div class="dist-item">
+        <div class="dist-hdr">
+          <span style="color:${b.healthy?col:'var(--red)'}">${b.id} <span style="color:var(--muted)">:${b.port}</span></span>
+          <span style="color:var(--text)">${b.req_per_sec.toFixed(0)} req/s · ${pct}%</span>
         </div>
-        <div style="height:5px;background:var(--border)">
-          <div style="height:100%;width:${pct}%;background:${b.healthy ? col : 'var(--red)'};transition:width 0.5s"></div>
-        </div>
+        <div class="dist-t"><div class="dist-f" style="width:${pct}%;background:${b.healthy?col:'var(--red)'}"></div></div>
       </div>`;
     }).join('');
   }
 
-  // Pod cards — all data from real backend metrics
-  if (bs.length === 0) {
-    document.getElementById('pods-grid').innerHTML =
-      '<div class="empty-pods">No pods running.<br>Enter a port above and click SPAWN POD.</div>';
+  // Request log
+  renderLog(s.req_log || []);
+
+  // Pod cards
+  renderPods(bs);
+
+  // Update visualizer data
+  vizState.backends = bs;
+  vizState.rps      = g.req_per_sec;
+  vizState.algo     = g.algorithm;
+}
+
+function renderLog(logs) {
+  if (!logs.length) {
+    document.getElementById('log-list').innerHTML = '<div class="no-logs">Waiting for requests...</div>';
     return;
   }
-  const totalReqs = bs.reduce((s, b) => s + b.total_requests, 0) || 1;
-  document.getElementById('pods-grid').innerHTML = bs.map((b, i) => {
-    const col   = COLORS[i % COLORS.length];
-    const share = (b.total_requests / totalReqs * 100).toFixed(1);
-    return `
-    <div class="pod ${b.healthy ? 'up' : 'down'}">
+  document.getElementById('log-list').innerHTML = logs.map(e => {
+    const latClass = e.latency_ms > 200 ? 'log-slow' : e.status >= 400 ? 'log-err' : 'log-ok';
+    return `<div class="log-row">
+      <span class="log-ts">${e.ts}</span>
+      <span class="log-be" style="color:${COLORS[parseInt(e.backend.replace('B',''))-1]||'var(--accent)'}">${e.backend}</span>
+      <span class="log-path">${e.path}</span>
+      <span class="log-lat ${latClass}">${e.latency_ms}ms</span>
+    </div>`;
+  }).join('');
+}
+
+function renderPods(bs) {
+  if (!bs.length) {
+    document.getElementById('pods-grid').innerHTML =
+      '<div class="empty">No pods running.<br>Enter a port and click SPAWN.</div>';
+    return;
+  }
+  // Traffic share uses LIVE req/s
+  const totalRps = bs.reduce((s,b)=>s+b.req_per_sec,0)||1;
+  document.getElementById('pods-grid').innerHTML = bs.map((b,i) => {
+    const col = COLORS[i%COLORS.length];
+    const share = (b.req_per_sec/totalRps*100).toFixed(1);
+    const cbColor = b.cb_state==='CLOSED'?'var(--green)':b.cb_state==='HALF_OPEN'?'var(--yellow)':'var(--red)';
+    return `<div class="pod ${b.healthy?'up':'down'}">
       <div class="pod-hdr">
         <div>
-          <div class="pod-id" style="color:${b.healthy ? col : 'var(--red)'}">${b.id}</div>
-          <div class="pod-port">:${b.port}</div>
+          <div class="pod-id" style="color:${b.healthy?col:'var(--red)'}">${b.id}</div>
+          <div class="pod-addr">:${b.port}</div>
         </div>
-        <div class="pod-badge ${b.healthy ? 'up':'down'}">${b.healthy ? 'UP':'DOWN'}</div>
+        <div class="pod-badge ${b.healthy?'up':'down'}">${b.healthy?'UP':'DOWN'}</div>
       </div>
-      <div class="pod-grid2">
-        <div>
-          <div class="pm-label">REQ/S</div>
-          <div class="pm-val">${b.req_per_sec.toFixed(0)}</div>
-        </div>
-        <div>
-          <div class="pm-label">ACTIVE</div>
-          <div class="pm-val">${b.active_connections}</div>
-        </div>
-        <div>
-          <div class="pm-label">WEIGHT</div>
-          <div class="pm-val">${b.weight}</div>
-        </div>
-        <div>
-          <div class="pm-label">CIRCUIT</div>
-          <div class="pm-val" style="font-size:11px;color:${b.cb_state==='CLOSED'?'var(--green)':b.cb_state==='HALF_OPEN'?'var(--yellow)':'var(--red)'}">${b.cb_state||'CLOSED'}</div>
-        </div>
+      <div class="pod-g2">
+        <div><div class="pm-l">REQ/S</div><div class="pm-v">${b.req_per_sec.toFixed(0)}</div></div>
+        <div><div class="pm-l">ACTIVE</div><div class="pm-v">${b.active_connections}</div></div>
+        <div><div class="pm-l">WEIGHT</div><div class="pm-v">${b.weight}</div></div>
+        <div><div class="pm-l">CIRCUIT</div><div class="pm-v pod-cb" style="color:${cbColor};font-size:10px">${b.cb_state}</div></div>
       </div>
       <div>
-        <div class="share-label"><span>traffic share</span><span>${share}%</span></div>
-        <div class="share-track">
-          <div class="share-fill" style="width:${share}%;background:${b.healthy ? col : 'var(--red)'}"></div>
-        </div>
+        <div class="share-l"><span>live traffic share</span><span>${share}%</span></div>
+        <div class="share-t"><div class="share-f" style="width:${share}%;background:${b.healthy?col:'var(--red)'}"></div></div>
       </div>
       <button class="kill-btn" onclick="killPod('${b.id}')">KILL POD</button>
     </div>`;
   }).join('');
+}
+
+function fmt(n) {
+  if(n>=1e6)return(n/1e6).toFixed(1)+'M';
+  if(n>=1e3)return(n/1e3).toFixed(1)+'K';
+  return String(n);
+}
+
+// ── Canvas Visualizer ──────────────────────────────────
+const canvas = document.getElementById('viz');
+const ctx    = canvas.getContext('2d');
+let vizState = { backends:[], rps:0, algo:'' };
+let particles = [];
+let lastSpawn = 0;
+
+function resizeCanvas() {
+  canvas.width  = canvas.parentElement.clientWidth;
+  canvas.height = 180;
+}
+
+function getLB()     { return { x: canvas.width/2, y: canvas.height/2 }; }
+function getClient() { return { x: 52, y: canvas.height/2 }; }
+function getPods(bs) {
+  if (!bs.length) return [];
+  const n = bs.length;
+  const sx = canvas.width - 60;
+  const sp = Math.min(36, (canvas.height-30)/Math.max(n,1));
+  const sy = canvas.height/2 - (n-1)*sp/2;
+  return bs.map((b,i) => ({
+    x: sx, y: sy+i*sp,
+    color: COLORS[i%COLORS.length],
+    healthy: b.healthy,
+    id: b.id,
+    rps: b.req_per_sec,
+    cb: b.cb_state
+  }));
+}
+
+function drawViz(ts) {
+  resizeCanvas();
+  const W = canvas.width, H = canvas.height;
+  ctx.fillStyle = '#0c1120';
+  ctx.fillRect(0,0,W,H);
+
+  const lb  = getLB();
+  const cli = getClient();
+  const pods = getPods(vizState.backends);
+  const rps  = vizState.rps;
+
+  // Lines
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#1a2840'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cli.x+20,cli.y); ctx.lineTo(lb.x-26,lb.y); ctx.stroke();
+  pods.forEach(p => {
+    ctx.strokeStyle = p.healthy ? (p.cb==='OPEN'?'rgba(255,61,87,.3)':'#1a2840') : 'rgba(255,61,87,.2)';
+    ctx.setLineDash(p.healthy&&p.cb!=='OPEN'?[]:[4,4]);
+    ctx.beginPath(); ctx.moveTo(lb.x+26,lb.y); ctx.lineTo(p.x-20,p.y); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  // Client box
+  ctx.fillStyle='#0d1a2e'; ctx.strokeStyle='#1e3a5f'; ctx.lineWidth=1;
+  ctx.fillRect(cli.x-22,cli.y-13,44,26); ctx.strokeRect(cli.x-22,cli.y-13,44,26);
+  ctx.fillStyle='#4a6080'; ctx.font='700 9px JetBrains Mono';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('CLIENT',cli.x,cli.y);
+
+  // LB box — glows brighter with more traffic
+  const glow = Math.min(rps/30,1);
+  ctx.shadowColor=`rgba(0,212,255,${glow*.7})`; ctx.shadowBlur=glow*18;
+  ctx.fillStyle='#0d1a2e';
+  ctx.strokeStyle=rps>0?'#00d4ff':'#1e3a5f'; ctx.lineWidth=rps>0?1.5:1;
+  ctx.fillRect(lb.x-28,lb.y-18,56,36); ctx.strokeRect(lb.x-28,lb.y-18,56,36);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#00d4ff'; ctx.font='700 8px JetBrains Mono';
+  ctx.fillText('LOAD',lb.x,lb.y-5); ctx.fillText('BALANCER',lb.x,lb.y+6);
+  // Show algo below LB
+  const algoShort = {'round-robin':'RR','least-connections':'LC','ip-hash':'HASH'}[vizState.algo]||'';
+  ctx.fillStyle='#3d5470'; ctx.font='8px JetBrains Mono';
+  ctx.fillText(algoShort, lb.x, lb.y+22);
+
+  // Pod boxes
+  pods.forEach(p => {
+    const active = p.rps > 0;
+    ctx.shadowColor = p.cb==='OPEN' ? 'rgba(255,61,87,.4)' :
+                      p.healthy && active ? `rgba(0,230,118,.4)` : 'rgba(0,230,118,.1)';
+    ctx.shadowBlur = p.healthy && active ? 10 : 3;
+    ctx.fillStyle = p.healthy ? '#0d1a2e' : 'rgba(255,61,87,.08)';
+    ctx.strokeStyle = p.cb==='OPEN' ? '#ff3d57' : (p.healthy ? p.color : '#ff3d57');
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(p.x-22,p.y-13,44,26); ctx.strokeRect(p.x-22,p.y-13,44,26);
+    ctx.shadowBlur=0;
+    ctx.fillStyle = p.cb==='OPEN' ? '#ff3d57' : p.color;
+    ctx.font='700 9px JetBrains Mono';
+    ctx.fillText(p.id, p.x, p.y-4);
+    ctx.fillStyle='#3d5470'; ctx.font='8px JetBrains Mono';
+    const label = !p.healthy ? 'DOWN' : p.cb==='OPEN' ? 'CB OPEN' : p.rps.toFixed(0)+'/s';
+    ctx.fillText(label, p.x, p.y+7);
+  });
+
+  // Spawn particles based on real rps
+  const spawnInterval = Math.max(30, 500 - rps*8);
+  if (ts - lastSpawn > spawnInterval && pods.length > 0) {
+    const healthy = pods.filter(p=>p.healthy&&p.cb!=='OPEN');
+    if (healthy.length > 0) {
+      const pod = healthy[Math.floor(Math.random()*healthy.length)];
+      particles.push({ px:cli.x, py:cli.y, lbx:lb.x, lby:lb.y,
+                        podx:pod.x, pody:pod.y, col:pod.color,
+                        phase:0, t:0, speed:0.04+Math.random()*.03 });
+      lastSpawn = ts;
+    }
+  }
+
+  // Draw particles — two-segment animation: client→LB→pod
+  particles = particles.filter(p => {
+    p.t += p.speed;
+    let x, y;
+    if (p.phase===0) {
+      const t = Math.min(p.t,1);
+      x = p.px+(p.lbx-p.px)*t; y = p.py+(p.lby-p.py)*t;
+      if (p.t>=1) { p.phase=1; p.t=0; }
+    } else {
+      const t = Math.min(p.t,1);
+      x = p.lbx+(p.podx-p.lbx)*t; y = p.lby+(p.pody-p.lby)*t;
+      if (p.t>=1) return false;
+    }
+    ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2);
+    ctx.fillStyle=p.col; ctx.shadowColor=p.col; ctx.shadowBlur=6;
+    ctx.fill(); ctx.shadowBlur=0;
+    return true;
+  });
+
+  requestAnimationFrame(drawViz);
 }
 
 // ── SSE ────────────────────────────────────────────────
@@ -530,18 +528,16 @@ const es = new EventSource('/api/stream');
 es.onmessage = e => {
   try {
     render(JSON.parse(e.data));
-    document.getElementById('dot').className = 'dot';
-  } catch(err) { console.error(err); }
+    document.getElementById('dot').className='dot';
+  } catch(err){ console.error(err); }
 };
-es.onerror = () => { document.getElementById('dot').className = 'dot dead'; };
+es.onerror = () => { document.getElementById('dot').className='dot dead'; };
 
 // ── Boot ───────────────────────────────────────────────
 resizeCanvas();
 requestAnimationFrame(drawViz);
-document.getElementById('port-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') spawnPod();
-});
-window.addEventListener('resize', resizeCanvas);
+document.getElementById('port-in').addEventListener('keydown',e=>{if(e.key==='Enter')spawnPod();});
+window.addEventListener('resize',resizeCanvas);
 </script>
 </body>
 </html>
