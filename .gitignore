@@ -3,3 +3,5 @@ netbalancer.pipe
 netbalancer.log
 httplib.h
 backends.pid
+documentation.md
+ 

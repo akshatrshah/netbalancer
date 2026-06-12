@@ -1,0 +1,8 @@
+{
+    "algorithm": "rr",
+    "backends": [
+      {"host": "localhost", "port": 8001, "weight": 1},
+      {"host": "localhost", "port": 8002, "weight": 1},
+      {"host": "localhost", "port": 8003, "weight": 1}
+    ]
+  }

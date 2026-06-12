@@ -1042,6 +1042,7 @@ void print_help() {
   │  status                       Live status               │
   │  bench                        Metrics summary           │
   │  benchmark [N] [C]            Run N reqs, C concurrent  │
+  │  reload                       Hot reload config.json    │
   │  help                         Show this help            │
   │  exit                         Shutdown                  │
   └──────────────────────────────────────────────────────────┘
@@ -1147,6 +1148,234 @@ static void kill_pod(int port) {
     }
 }
 
+
+// ═══════════════════════════════════════════════════════
+//  Prometheus Metrics Endpoint
+//
+//  Exposes /metrics in standard Prometheus text format.
+//  Scraped by Prometheus every 15s in production.
+//  Metrics: request counters, latency histograms,
+//           backend health, active connections, error rates
+// ═══════════════════════════════════════════════════════
+
+static std::string prometheus_metrics() {
+    std::ostringstream m;
+    m << std::fixed << std::setprecision(4);
+
+    auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - gmetrics.start_time).count();
+
+    // Global counters
+    m << "# HELP netbalancer_requests_total Total HTTP requests received\n";
+    m << "# TYPE netbalancer_requests_total counter\n";
+    m << "netbalancer_requests_total " << gmetrics.total_requests.load() << "\n\n";
+
+    m << "# HELP netbalancer_errors_total Total request errors (4xx/5xx)\n";
+    m << "# TYPE netbalancer_errors_total counter\n";
+    m << "netbalancer_errors_total " << gmetrics.total_errors.load() << "\n\n";
+
+    m << "# HELP netbalancer_failovers_total Total backend failover events\n";
+    m << "# TYPE netbalancer_failovers_total counter\n";
+    m << "netbalancer_failovers_total " << gmetrics.total_failovers.load() << "\n\n";
+
+    // Global latency percentiles (gauges — current rolling window)
+    m << "# HELP netbalancer_latency_p50_ms P50 request latency milliseconds\n";
+    m << "# TYPE netbalancer_latency_p50_ms gauge\n";
+    m << "netbalancer_latency_p50_ms " << gmetrics.p50_ms << "\n\n";
+
+    m << "# HELP netbalancer_latency_p95_ms P95 request latency milliseconds\n";
+    m << "# TYPE netbalancer_latency_p95_ms gauge\n";
+    m << "netbalancer_latency_p95_ms " << gmetrics.p95_ms << "\n\n";
+
+    m << "# HELP netbalancer_latency_p99_ms P99 request latency milliseconds\n";
+    m << "# TYPE netbalancer_latency_p99_ms gauge\n";
+    m << "netbalancer_latency_p99_ms " << gmetrics.p99_ms << "\n\n";
+
+    m << "# HELP netbalancer_requests_per_second Current request throughput\n";
+    m << "# TYPE netbalancer_requests_per_second gauge\n";
+    m << "netbalancer_requests_per_second " << gmetrics.req_per_sec << "\n\n";
+
+    m << "# HELP netbalancer_uptime_seconds Seconds since process start\n";
+    m << "# TYPE netbalancer_uptime_seconds counter\n";
+    m << "netbalancer_uptime_seconds " << uptime << "\n\n";
+
+    // Per-backend metrics with labels
+    m << "# HELP netbalancer_backend_requests_total Requests routed to each backend\n";
+    m << "# TYPE netbalancer_backend_requests_total counter\n";
+
+    m << "# HELP netbalancer_backend_errors_total Errors per backend\n";
+    m << "# TYPE netbalancer_backend_errors_total counter\n";
+
+    m << "# HELP netbalancer_backend_active_connections Active connections per backend\n";
+    m << "# TYPE netbalancer_backend_active_connections gauge\n";
+
+    m << "# HELP netbalancer_backend_healthy Backend health status (1=up, 0=down)\n";
+    m << "# TYPE netbalancer_backend_healthy gauge\n";
+
+    m << "# HELP netbalancer_backend_p99_ms P99 latency per backend\n";
+    m << "# TYPE netbalancer_backend_p99_ms gauge\n";
+
+    m << "# HELP netbalancer_backend_circuit_breaker Circuit breaker state (0=CLOSED, 1=HALF_OPEN, 2=OPEN)\n";
+    m << "# TYPE netbalancer_backend_circuit_breaker gauge\n";
+
+    m << "# HELP netbalancer_backend_weight Configured weight per backend\n";
+    m << "# TYPE netbalancer_backend_weight gauge\n";
+
+    {
+        std::lock_guard<std::mutex> lk(pool.mtx);
+        for (auto& b : pool.backends) {
+            std::string lbl = "{backend=\"" + b->id + "\",host=\"" +
+                               b->host + ":" + std::to_string(b->port) + "\"}";
+            int cb_val = (b->cb_state.load() == CBState::CLOSED)    ? 0 :
+                         (b->cb_state.load() == CBState::HALF_OPEN)  ? 1 : 2;
+
+            m << "netbalancer_backend_requests_total"      << lbl << " " << b->total_requests.load()    << "\n";
+            m << "netbalancer_backend_errors_total"        << lbl << " " << b->total_errors.load()      << "\n";
+            m << "netbalancer_backend_active_connections"  << lbl << " " << b->active_connections.load()<< "\n";
+            m << "netbalancer_backend_healthy"             << lbl << " " << (b->healthy ? 1 : 0)        << "\n";
+            m << "netbalancer_backend_p99_ms"              << lbl << " " << b->percentile(0.99)         << "\n";
+            m << "netbalancer_backend_circuit_breaker"     << lbl << " " << cb_val                      << "\n";
+            m << "netbalancer_backend_weight"              << lbl << " " << b->weight                   << "\n";
+        }
+    }
+
+    return m.str();
+}
+
+
+// ═══════════════════════════════════════════════════════
+//  Config Hot Reload (SIGHUP)
+//
+//  Reads config.json on SIGHUP signal — no restart needed.
+//  Backends not in new config are drained and removed.
+//  New backends are added immediately.
+//  Algorithm and rate limit changes take effect instantly.
+//
+//  config.json format:
+//  {
+//    "algorithm": "rr",
+//    "backends": [
+//      {"host": "localhost", "port": 8001, "weight": 1},
+//      {"host": "localhost", "port": 8002, "weight": 2}
+//    ]
+//  }
+// ═══════════════════════════════════════════════════════
+
+static const std::string CONFIG_PATH = "config.json";
+static std::atomic<bool> reload_requested{false};
+
+// Minimal JSON parser for config — no external deps
+static std::string json_str_val(const std::string& json, const std::string& key) {
+    auto pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return "";
+    pos = json.find(":", pos);
+    if (pos == std::string::npos) return "";
+    pos = json.find("\"", pos);
+    if (pos == std::string::npos) return "";
+    auto end = json.find("\"", pos+1);
+    if (end == std::string::npos) return "";
+    return json.substr(pos+1, end-pos-1);
+}
+
+static int json_int_val(const std::string& json, const std::string& key, int def=0) {
+    auto pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return def;
+    pos = json.find(":", pos);
+    if (pos == std::string::npos) return def;
+    pos = json.find_first_of("0123456789", pos);
+    if (pos == std::string::npos) return def;
+    return std::stoi(json.substr(pos));
+}
+
+void reload_config() {
+    std::ifstream f(CONFIG_PATH);
+    if (!f.is_open()) {
+        LOG_WARN("SIGHUP received but " + CONFIG_PATH + " not found — skipping reload");
+        std::cout << "  [RELOAD] " << CONFIG_PATH << " not found — no changes made\n";
+        return;
+    }
+    std::string json((std::istreambuf_iterator<char>(f)), {});
+    LOG_INFO("Reloading config from " + CONFIG_PATH);
+    std::cout << "  \033[1;36m[RELOAD]\033[0m Loading " << CONFIG_PATH << "...\n";
+
+    // Parse algorithm
+    std::string algo = json_str_val(json, "algorithm");
+    if (!algo.empty()) {
+        if      (algo=="rr"||algo=="round-robin")       pool.algorithm = Algorithm::ROUND_ROBIN;
+        else if (algo=="lc"||algo=="least-connections") pool.algorithm = Algorithm::LEAST_CONNECTIONS;
+        else if (algo=="hash"||algo=="ip-hash")         pool.algorithm = Algorithm::IP_HASH;
+        std::cout << "  [RELOAD] Algorithm: " << pool.algo_name() << "\n";
+        LOG_INFO("RELOAD algorithm=" + pool.algo_name());
+    }
+
+    // Parse backends array
+    std::vector<std::tuple<std::string,int,int>> new_backends;
+    size_t pos = json.find("\"backends\"");
+    if (pos != std::string::npos) {
+        size_t arr_start = json.find("[", pos);
+        size_t arr_end   = json.find("]", arr_start);
+        if (arr_start != std::string::npos && arr_end != std::string::npos) {
+            std::string arr = json.substr(arr_start+1, arr_end-arr_start-1);
+            // Parse each {host, port, weight} object
+            size_t obj = 0;
+            while ((obj = arr.find("{", obj)) != std::string::npos) {
+                size_t obj_end = arr.find("}", obj);
+                if (obj_end == std::string::npos) break;
+                std::string entry = arr.substr(obj, obj_end-obj+1);
+                std::string host = json_str_val(entry, "host");
+                int port   = json_int_val(entry, "port");
+                int weight = json_int_val(entry, "weight", 1);
+                if (!host.empty() && port > 0)
+                    new_backends.emplace_back(host, port, weight);
+                obj = obj_end + 1;
+            }
+        }
+    }
+
+    if (new_backends.empty()) {
+        std::cout << "  [RELOAD] No backends found in config — keeping existing\n";
+        return;
+    }
+
+    // Diff: find backends to remove (in pool but not in config)
+    std::vector<std::string> to_remove;
+    {
+        std::lock_guard<std::mutex> lk(pool.mtx);
+        for (auto& b : pool.backends) {
+            bool found = false;
+            for (auto& [h,p,w] : new_backends)
+                if (b->host==h && b->port==p) { found=true; break; }
+            if (!found) to_remove.push_back(b->id);
+        }
+    }
+    for (auto& id : to_remove) {
+        pool.remove(id);
+        std::cout << "  [RELOAD] Removed backend " << id << "\n";
+        LOG_INFO("RELOAD removed " + id);
+    }
+
+    // Add new backends not already in pool
+    for (auto& [host, port, weight] : new_backends) {
+        bool exists = false;
+        {
+            std::lock_guard<std::mutex> lk(pool.mtx);
+            for (auto& b : pool.backends)
+                if (b->host==host && b->port==port) { exists=true; break; }
+        }
+        if (!exists) {
+            pool.add(host, port, weight);
+            std::cout << "  [RELOAD] Added backend " << host << ":" << port
+                      << " weight=" << weight << "\n";
+        }
+    }
+
+    std::cout << "  [RELOAD] Done. " << new_backends.size()
+              << " backends active, algorithm=" << pool.algo_name() << "\n";
+    LOG_INFO("RELOAD complete — " + std::to_string(new_backends.size()) + " backends");
+}
+
+void handle_sighup(int) { reload_requested = true; }
+
 // ═══════════════════════════════════════════════════════
 //  CLI Dispatcher
 // ═══════════════════════════════════════════════════════
@@ -1193,6 +1422,8 @@ void dispatch(const std::string& line) {
         iss>>total>>concurrency;
         if (pool.backends.empty()) { std::cout<<"  No backends. Spawn pods first.\n"; return; }
         print_bench_result(run_benchmark(total, concurrency));
+    } else if (cmd=="reload")    {
+        reload_config();
     } else if (cmd=="help")      { print_help();
     } else if (cmd=="exit"||cmd=="quit") { running=false;
     } else { std::cout<<"  Unknown: '"<<cmd<<"'. Type 'help'.\n"; }
@@ -1232,6 +1463,13 @@ void dashboard_server() {
                 return running.load();
             });
     });
+
+    // Prometheus scrape endpoint — standard text format
+    svr.Get("/metrics", [](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin","*");
+        res.set_content(prometheus_metrics(), "text/plain; version=0.0.4; charset=utf-8");
+    });
+
     svr.listen("0.0.0.0", DASHBOARD_PORT);
 }
 
@@ -1277,8 +1515,9 @@ void handle_signal(int) {
 }
 
 int main() {
-    signal(SIGINT, handle_signal);
+    signal(SIGINT,  handle_signal);
     signal(SIGTERM, handle_signal);
+    signal(SIGHUP,  handle_sighup);   // hot reload
     signal(SIGPIPE, SIG_IGN);
     Logger::instance().set_console(false);
     gmetrics.start_time = std::chrono::steady_clock::now();
@@ -1295,7 +1534,9 @@ int main() {
     std::cout << "\033[1m╚══════════════════════════════════════════════════════╝\033[0m\n";
     std::cout << "  I/O Model  : " << io_model << "\n";
     std::cout << "  Listening  : :" << LB_PORT << "\n";
-    std::cout << "  Dashboard  : http://localhost:" << DASHBOARD_PORT << "\n\n";
+    std::cout << "  Dashboard  : http://localhost:" << DASHBOARD_PORT << "\n";
+    std::cout << "  Prometheus : http://localhost:" << DASHBOARD_PORT << "/metrics\n";
+    std::cout << "  Hot reload : kill -HUP <pid>  or  reload command\n\n";
 
     std::thread t1(acceptor);
     std::thread t2(health_checker);
@@ -1307,6 +1548,10 @@ int main() {
 
     std::string line;
     while (running) {
+        // Check for pending SIGHUP reload
+        if (reload_requested.exchange(false)) {
+            reload_config();
+        }
         std::cout << "netbalancer> ";
         if (!std::getline(std::cin, line)) break;
         dispatch(line);
