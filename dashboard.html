@@ -172,18 +172,11 @@ header{display:flex;align-items:center;justify-content:space-between;padding:0 2
     <div class="viz-wrap"><canvas id="viz"></canvas></div>
   </div>
 
-  <!-- Pods -->
+  <!-- Backends -->
   <div>
-    <div class="pods-hdr">
-      <div class="sec" style="margin-bottom:0">BACKEND PODS</div>
-      <div class="spawn-row">
-        <input class="port-in" id="port-in" placeholder="port e.g. 8001" type="number">
-        <button class="spawn-btn" onclick="spawnPod()">+ SPAWN</button>
-      </div>
-    </div>
-    <div style="height:8px"></div>
+    <div class="sec">BACKEND SERVERS</div>
     <div class="pods-grid" id="pods-grid">
-      <div class="empty">No pods running.<br>Enter a port above and click SPAWN.</div>
+      <div class="empty">No backends registered.<br>Use the BACKENDS tab to add servers.</div>
     </div>
   </div>
 
@@ -192,20 +185,73 @@ header{display:flex;align-items:center;justify-content:space-between;padding:0 2
 <!-- Right panel -->
 <div class="right">
   <div class="r-tabs">
-    <div class="r-tab active" onclick="rtab('dist')">TRAFFIC</div>
+    <div class="r-tab active" onclick="rtab('traffic')">TRAFFIC</div>
+    <div class="r-tab" onclick="rtab('backends')">BACKENDS</div>
     <div class="r-tab" onclick="rtab('log')">REQUEST LOG</div>
-    <div class="r-tab" onclick="rtab('ctrl')">CONTROL</div>
   </div>
   <div class="r-body">
 
-    <!-- TRAFFIC dist -->
-    <div class="tc active" id="tc-dist">
-      <div class="sec">LIVE REQ/S PER POD</div>
-      <div id="dist-list"><div style="color:var(--muted);font-family:var(--mono);font-size:11px">No pods yet.</div></div>
-      <div style="height:16px"></div>
+    <!-- TRAFFIC -->
+    <div class="tc active" id="tc-traffic">
+      <div class="sec">INGRESS</div>
+      <div id="ingress-info" style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:2;background:var(--bg3);border:1px solid var(--border);padding:10px 12px;margin-bottom:14px;">
+        Point your clients at<br>
+        <span style="color:var(--accent);font-weight:700" id="ingress-addr">—</span><br>
+        <span style="font-size:9px">Any HTTP client, any language</span>
+      </div>
+      <div class="sec">LIVE REQ/S PER BACKEND</div>
+      <div id="dist-list"><div style="color:var(--muted);font-family:var(--mono);font-size:11px">No backends yet.</div></div>
+      <div style="height:14px"></div>
       <div class="sec">RATE LIMITER</div>
-      <div id="rl-info" style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.8">
-        Token bucket: 100 tokens/IP<br>Refill: 50 tokens/sec<br>Tracked IPs: <span id="rl-ips">0</span>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.8">
+        Token bucket · 100 req burst · 50 req/s sustained<br>
+        Tracked IPs: <span id="rl-ips" style="color:var(--text)">0</span>
+      </div>
+    </div>
+
+    <!-- BACKENDS -->
+    <div class="tc" id="tc-backends">
+      <div class="ctrl-sec">
+        <div class="ctrl-l">ADD BACKEND SERVER</div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:6px">Any host — VM, container, cloud instance</div>
+        <div class="ctrl-row">
+          <input class="ci" id="in-host" placeholder="host / IP">
+          <input class="ci" id="in-port" placeholder="port" style="width:65px;flex:none">
+          <input class="ci" id="in-w" placeholder="w" value="1" style="width:36px;flex:none" title="weight">
+          <button class="cb b" onclick="addBackend()">ADD</button>
+        </div>
+      </div>
+      <div class="ctrl-sec">
+        <div class="ctrl-l">REMOVE BACKEND</div>
+        <div class="ctrl-row">
+          <input class="ci" id="in-rm" placeholder="Backend ID e.g. B1">
+          <button class="cb r" onclick="removeBackend()">REMOVE</button>
+        </div>
+      </div>
+      <div class="ctrl-sec">
+        <div class="ctrl-l">UPDATE WEIGHT</div>
+        <div class="ctrl-row">
+          <input class="ci" id="in-wid" placeholder="Backend ID">
+          <input class="ci" id="in-wnew" placeholder="new weight" style="width:90px;flex:none">
+          <button class="cb b" onclick="updateWeight()">SET</button>
+        </div>
+      </div>
+      <div style="border-top:1px solid var(--border);margin:14px 0 10px"></div>
+      <div class="ctrl-l" style="color:var(--muted);margin-bottom:8px">DEV / TEST TOOLS</div>
+      <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:8px;line-height:1.6">
+        Spawn a local Python HTTP server on a given port.<br>
+        Use for testing only — not for production backends.
+      </div>
+      <div class="ctrl-row">
+        <input class="ci" id="port-in" placeholder="local port e.g. 8001" type="number">
+        <input class="ci" id="in-sw" placeholder="w" value="1" style="width:36px;flex:none">
+        <button class="cb g" onclick="spawnPod()">SPAWN TEST SERVER</button>
+      </div>
+      <div style="height:10px"></div>
+      <div class="ctrl-l" style="margin-bottom:6px">RAW COMMAND</div>
+      <div class="ctrl-row">
+        <input class="ci" id="in-raw" placeholder="e.g. reload" onkeydown="if(event.key==='Enter')sendRaw()">
+        <button class="cb b" onclick="sendRaw()">SEND</button>
       </div>
     </div>
 
@@ -214,39 +260,13 @@ header{display:flex;align-items:center;justify-content:space-between;padding:0 2
       <div class="sec">LAST 30 REQUESTS</div>
       <div style="display:flex;gap:8px;font-family:var(--mono);font-size:9px;color:var(--muted);padding-bottom:6px;border-bottom:1px solid var(--border);margin-bottom:4px;">
         <span style="width:54px">TIME</span>
-        <span style="width:28px">POD</span>
+        <span style="width:28px">BACKEND</span>
         <span style="flex:1">PATH</span>
         <span style="width:45px;text-align:right">LATENCY</span>
       </div>
       <div id="log-list"><div class="no-logs">Waiting for requests...</div></div>
     </div>
 
-    <!-- CONTROL -->
-    <div class="tc" id="tc-ctrl">
-      <div class="ctrl-sec">
-        <div class="ctrl-l">ADD BACKEND</div>
-        <div class="ctrl-row">
-          <input class="ci" id="in-host" placeholder="host" value="localhost">
-          <input class="ci" id="in-port" placeholder="port" style="width:65px;flex:none">
-          <input class="ci" id="in-w" placeholder="w" value="1" style="width:36px;flex:none">
-          <button class="cb b" onclick="addBackend()">ADD</button>
-        </div>
-      </div>
-      <div class="ctrl-sec">
-        <div class="ctrl-l">REMOVE BACKEND</div>
-        <div class="ctrl-row">
-          <input class="ci" id="in-rm" placeholder="e.g. B1">
-          <button class="cb r" onclick="removeBackend()">REMOVE</button>
-        </div>
-      </div>
-      <div class="ctrl-sec">
-        <div class="ctrl-l">RAW COMMAND</div>
-        <div class="ctrl-row">
-          <input class="ci" id="in-raw" placeholder="e.g. algo lc" onkeydown="if(event.key==='Enter')sendRaw()">
-          <button class="cb b" onclick="sendRaw()">SEND</button>
-        </div>
-      </div>
-    </div>
   </div>
 </div>
 </div>
@@ -262,17 +282,22 @@ async function cmd(c) {
 function setAlgo(a) { cmd('algo '+a); }
 function spawnPod() {
   const p = document.getElementById('port-in').value.trim();
-  if (p) { cmd('spawn '+p); document.getElementById('port-in').value=''; }
+  const w = document.getElementById('in-sw').value.trim() || '1';
+  if (p) { cmd('spawn '+p+' '+w); document.getElementById('port-in').value=''; }
 }
 function killPod(id) { cmd('killpod '+id); }
 function addBackend() { cmd('add '+val('in-host')+' '+val('in-port')+' '+(val('in-w')||'1')); }
 function removeBackend() { cmd('remove '+val('in-rm')); }
+function updateWeight() {
+  const id = val('in-wid'), w = val('in-wnew');
+  if (id && w) cmd('weight '+id+' '+w);
+}
 function sendRaw() { cmd(val('in-raw')); }
 function val(id) { return document.getElementById(id).value.trim(); }
 
 // ── Tabs ───────────────────────────────────────────────
 function rtab(name) {
-  ['dist','log','ctrl'].forEach((n,i) => {
+  ['traffic','backends','log'].forEach((n,i) => {
     document.querySelectorAll('.r-tab')[i].classList.toggle('active', n===name);
     document.getElementById('tc-'+n).classList.toggle('active', n===name);
   });
@@ -283,6 +308,10 @@ function render(s) {
   state = s;
   const g = s.global, bs = s.backends;
   const healthy = bs.filter(b=>b.healthy).length;
+
+  // Show ingress address
+  const ingressEl = document.getElementById('ingress-addr');
+  if (ingressEl) ingressEl.textContent = window.location.hostname + ':' + (g.lb_port || 8080);
 
   // Header
   document.getElementById('h-rps').textContent   = Math.round(g.req_per_sec);

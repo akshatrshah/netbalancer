@@ -57,22 +57,27 @@
 #include "logger.hpp"
 
 // ═══════════════════════════════════════════════════════
-//  Constants
+//  Runtime Configuration
+//  All values configurable via CLI flags or config.json
 // ═══════════════════════════════════════════════════════
 
-static constexpr int    LB_PORT             = 8080;
-static constexpr int    DASHBOARD_PORT      = 9090;
+// Fixed compile-time constants
 static constexpr int    HEALTH_INTERVAL_MS  = 2000;
 static constexpr int    METRICS_INTERVAL_MS = 1000;
 static constexpr int    HEALTH_TIMEOUT_MS   = 1000;
 static constexpr int    FAIL_THRESHOLD      = 2;
 static constexpr int    RECOVER_THRESHOLD   = 2;
 static constexpr int    CONNECT_TIMEOUT_MS  = 500;
-static constexpr int    PROXY_TIMEOUT_MS    = 5000;
 static constexpr size_t LATENCY_WINDOW      = 1024;
 static constexpr int    CB_ERROR_THRESHOLD  = 5;
 static constexpr int    CB_HALF_OPEN_SECS   = 30;
-static const std::string PIPE_PATH          = "netbalancer.pipe";
+
+// Runtime-configurable (set by CLI flags / config.json)
+static int         LB_PORT        = 8080;
+static int         DASHBOARD_PORT = 9090;
+static std::string CONFIG_FILE    = "config.json";
+static std::string HEALTH_PATH    = "/health";  // health check endpoint
+static const std::string PIPE_PATH = "netbalancer.pipe";
 
 // ═══════════════════════════════════════════════════════
 //  Lock-Free Ring Buffer
@@ -653,7 +658,7 @@ static void proxy_blocking(int cfd, int bfd) {
     char buf[65536];
     while (running) {
         struct pollfd pfds[2] = {{cfd,POLLIN,0},{bfd,POLLIN,0}};
-        if (poll(pfds,2,PROXY_TIMEOUT_MS)<=0) break;
+        if (poll(pfds,2,5000)<=0) break;
         for (int i=0;i<2;i++) {
             if (!(pfds[i].revents&POLLIN)) continue;
             int src=(i==0)?cfd:bfd, dst=(i==0)?bfd:cfd;
@@ -733,7 +738,7 @@ void acceptor() {
 static bool probe_backend(Backend& b) {
     int fd = connect_to_backend(b.host, b.port);
     if (fd < 0) return false;
-    std::string req = "HEAD /health HTTP/1.0\r\nHost: " + b.host + "\r\n\r\n";
+    std::string req = "HEAD " + HEALTH_PATH + " HTTP/1.0\r\nHost: " + b.host + "\r\n\r\n";
     write(fd, req.c_str(), req.size());
     char buf[256]; struct pollfd pfd{fd, POLLIN, 0}; bool ok = false;
     if (poll(&pfd, 1, HEALTH_TIMEOUT_MS) > 0) {
@@ -919,6 +924,7 @@ static std::string state_to_json() {
       << ",\"load_variance\":" << gmetrics.load_variance
       << ",\"algorithm\":\"" << esc(pool.algo_name()) << "\""
       << ",\"uptime_s\":" << uptime
+      << ",\"lb_port\":" << LB_PORT
       << ",\"rate_limited_ips\":" << rate_limiter.bucket_size()
       << "},"
       << "\"req_log\":[";
@@ -1042,6 +1048,7 @@ void print_help() {
   │  status                       Live status               │
   │  bench                        Metrics summary           │
   │  benchmark [N] [C]            Run N reqs, C concurrent  │
+  │  weight <id> <n>              Update backend weight      │
   │  reload                       Hot reload config.json    │
   │  help                         Show this help            │
   │  exit                         Shutdown                  │
@@ -1261,7 +1268,7 @@ static std::string prometheus_metrics() {
 //  }
 // ═══════════════════════════════════════════════════════
 
-static const std::string CONFIG_PATH = "config.json";
+// CONFIG_FILE is defined in runtime config above
 static std::atomic<bool> reload_requested{false};
 
 // Minimal JSON parser for config — no external deps
@@ -1288,15 +1295,23 @@ static int json_int_val(const std::string& json, const std::string& key, int def
 }
 
 void reload_config() {
-    std::ifstream f(CONFIG_PATH);
+    std::ifstream f(CONFIG_FILE);
     if (!f.is_open()) {
-        LOG_WARN("SIGHUP received but " + CONFIG_PATH + " not found — skipping reload");
-        std::cout << "  [RELOAD] " << CONFIG_PATH << " not found — no changes made\n";
+        LOG_WARN("SIGHUP received but " + CONFIG_FILE + " not found — skipping reload");
+        std::cout << "  [RELOAD] " << CONFIG_FILE << " not found — no changes made\n";
         return;
     }
     std::string json((std::istreambuf_iterator<char>(f)), {});
-    LOG_INFO("Reloading config from " + CONFIG_PATH);
-    std::cout << "  \033[1;36m[RELOAD]\033[0m Loading " << CONFIG_PATH << "...\n";
+    LOG_INFO("Reloading config from " + CONFIG_FILE);
+    std::cout << "  \033[1;36m[RELOAD]\033[0m Loading " << CONFIG_FILE << "...\n";
+
+    // Parse port overrides (config can set ports too, CLI takes precedence)
+    int cfg_port = json_int_val(json, "port", 0);
+    if (cfg_port > 0) LB_PORT = cfg_port;
+    int cfg_dash = json_int_val(json, "dashboard_port", 0);
+    if (cfg_dash > 0) DASHBOARD_PORT = cfg_dash;
+    std::string cfg_health = json_str_val(json, "health_path");
+    if (!cfg_health.empty()) HEALTH_PATH = cfg_health;
 
     // Parse algorithm
     std::string algo = json_str_val(json, "algorithm");
@@ -1422,6 +1437,19 @@ void dispatch(const std::string& line) {
         iss>>total>>concurrency;
         if (pool.backends.empty()) { std::cout<<"  No backends. Spawn pods first.\n"; return; }
         print_bench_result(run_benchmark(total, concurrency));
+    } else if (cmd=="weight") {
+        // weight <id> <new_weight> — update backend weight live
+        std::string id; int w;
+        if (!(iss >> id >> w)) { std::cout << "  Usage: weight <id> <weight>\n"; return; }
+        std::lock_guard<std::mutex> lk(pool.mtx);
+        bool found = false;
+        for (auto& b : pool.backends)
+            if (b->id == id) { b->weight = w; found = true;
+                std::cout << "  " << id << " weight set to " << w << "\n";
+                LOG_INFO("Weight updated: " + id + " = " + std::to_string(w));
+                break; }
+        if (!found) std::cout << "  Backend " << id << " not found.\n";
+        pool.rr_index.store(0);  // reset RR after weight change
     } else if (cmd=="reload")    {
         reload_config();
     } else if (cmd=="help")      { print_help();
@@ -1514,14 +1542,70 @@ void handle_signal(int) {
     if (s>=0) close(s);
 }
 
-int main() {
+static void print_usage(const char* prog) {
+    std::cout << "Usage: " << prog << " [options]\n\n"
+              << "Options:\n"
+              << "  --port <N>           Load balancer port (default: 8080)\n"
+              << "  --dashboard <N>      Dashboard port (default: 9090)\n"
+              << "  --config <file>      Config file path (default: config.json)\n"
+              << "  --algo <rr|lc|hash>  Routing algorithm (default: rr)\n"
+              << "  --health <path>      Health check endpoint (default: /health)\n"
+              << "  --help               Show this help\n\n"
+              << "Examples:\n"
+              << "  " << prog << " --port 80 --config /etc/netbalancer/prod.json\n"
+              << "  " << prog << " --port 443 --algo lc --health /ping\n\n"
+              << "Config file format (config.json):\n"
+              << "  {\n"
+              << "    \"port\": 8080,\n"
+              << "    \"dashboard_port\": 9090,\n"
+              << "    \"algorithm\": \"rr\",\n"
+              << "    \"health_path\": \"/health\",\n"
+              << "    \"backends\": [\n"
+              << "      {\"host\": \"192.168.1.10\", \"port\": 3000, \"weight\": 1},\n"
+              << "      {\"host\": \"192.168.1.11\", \"port\": 3000, \"weight\": 2}\n"
+              << "    ]\n"
+              << "  }\n";
+}
+
+int main(int argc, char* argv[]) {
+    // ── Parse CLI flags ──────────────────────────────
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") { print_usage(argv[0]); return 0; }
+        else if (arg == "--port"      && i+1 < argc) LB_PORT        = std::stoi(argv[++i]);
+        else if (arg == "--dashboard" && i+1 < argc) DASHBOARD_PORT = std::stoi(argv[++i]);
+        else if (arg == "--config"    && i+1 < argc) CONFIG_FILE    = argv[++i];
+        else if (arg == "--health"    && i+1 < argc) HEALTH_PATH    = argv[++i];
+        else if (arg == "--algo"      && i+1 < argc) {
+            std::string a = argv[++i];
+            if      (a=="rr"||a=="round-robin")       pool.algorithm = Algorithm::ROUND_ROBIN;
+            else if (a=="lc"||a=="least-connections")  pool.algorithm = Algorithm::LEAST_CONNECTIONS;
+            else if (a=="hash"||a=="ip-hash")          pool.algorithm = Algorithm::IP_HASH;
+            else { std::cerr << "Unknown algorithm: " << a << "\n"; return 1; }
+        }
+        else { std::cerr << "Unknown option: " << arg << "\n"; print_usage(argv[0]); return 1; }
+    }
+
     signal(SIGINT,  handle_signal);
     signal(SIGTERM, handle_signal);
-    signal(SIGHUP,  handle_sighup);   // hot reload
+    signal(SIGHUP,  handle_sighup);
     signal(SIGPIPE, SIG_IGN);
     Logger::instance().set_console(false);
     gmetrics.start_time = std::chrono::steady_clock::now();
     LOG_INFO("NetBalancer starting up");
+
+    // ── Load config file if it exists ───────────────
+    {
+        std::ifstream f(CONFIG_FILE);
+        if (f.is_open()) {
+            std::cout << "  Loading config from " << CONFIG_FILE << "\n";
+            f.close();
+            reload_config();  // load backends + algo from config
+        }
+    }
+
+    // ── Override config with CLI flags (CLI wins) ───
+    // (algorithm already set above if --algo was passed)
 
 #ifdef __APPLE__
     std::string io_model = "kqueue event loop (macOS)";
@@ -1536,7 +1620,10 @@ int main() {
     std::cout << "  Listening  : :" << LB_PORT << "\n";
     std::cout << "  Dashboard  : http://localhost:" << DASHBOARD_PORT << "\n";
     std::cout << "  Prometheus : http://localhost:" << DASHBOARD_PORT << "/metrics\n";
-    std::cout << "  Hot reload : kill -HUP <pid>  or  reload command\n\n";
+    std::cout << "  Config     : " << CONFIG_FILE << "\n";
+    std::cout << "  Algorithm  : " << pool.algo_name() << "\n";
+    std::cout << "  Health     : " << HEALTH_PATH << "\n";
+    std::cout << "  Hot reload : kill -HUP " << getpid() << "\n\n";
 
     std::thread t1(acceptor);
     std::thread t2(health_checker);
